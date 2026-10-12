@@ -359,7 +359,7 @@ class Engine:
             if tm.alive:
                 if code.startswith("random:"):
                     code = rng.choice(code[7:].split("|"))
-                self.try_status(st, tside, tm, code, rng, src_side=side)
+                self.try_status(st, tside, tm, code, rng, src_side=side, ignore_sub=True)
         elif kind == "damage_frac":
             if tm.alive and norm(tm.ability) != "magicguard":
                 d = dmg if code == "equal_to_last_damage" else max(1, math.floor(tm.maxhp * _frac(val) + 1e-9))
@@ -490,10 +490,10 @@ class Engine:
                     self._pending.append(herb)
         return new - old
 
-    def try_status(self, st, side, bm, code, rng, src_side=None):
+    def try_status(self, st, side, bm, code, rng, src_side=None, ignore_sub=False):
         if bm.status or not bm.alive:
             return False
-        if bm.sub > 0 and src_side is not None and src_side != side:
+        if bm.sub > 0 and src_side is not None and src_side != side and not ignore_sub:      # 특성/접촉 반격 상태이상은 대타를 무시
             return False
         ab = norm(bm.ability)
         if "safeguard" in st.sides[side].screens and src_side != side:
@@ -523,7 +523,7 @@ class Engine:
         self._say(st, f"  {bm.name} → {code}")
         self._status_item_cure(st, bm, code)
         if bm.status and ab == "synchronize" and src_side is not None and src_side != side and code in ("par", "brn", "psn", "tox"):
-            self.try_status(st, src_side, st.sides[src_side].mon, code, rng, src_side=side)
+            self.try_status(st, src_side, st.sides[src_side].mon, code, rng, src_side=side, ignore_sub=True)
         return True
 
     def _transform(self, st, bm, tgt):
@@ -903,6 +903,12 @@ class Engine:
             bm.charge, bm.semi = None, None
             bm.rampage = 0
             return
+        if norm(mname) == "focuspunch" and bm.hurt_turn == st.turn:      # 행동 전에 공격을 받으면 집중이 흐트러져 기술을 쓰지 못한다 (BeforeMove 중단)
+            self._say(st, "  집중이 흐트러졌다")
+            bm.db_pending = False
+            if norm(bm.item) not in CHOICE:
+                bm.locked = None
+            return
         if bm.throat and "sound" in mv["flags"]:
             self._say(st, "  지옥찌르기로 소리 기술 사용 불가")
             return
@@ -1007,6 +1013,7 @@ class Engine:
             bm.last_failed = False
             self._self_destruct_fail(st, i, mv)
             self._contact_punish(st, i, o, mv, rng)
+            self._rampage_abort(st, bm, rng)
             for r in mv["rules"]:
                 if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and bm.alive:
                     self.hp_change(st, i, bm, -math.floor(bm.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
@@ -1023,7 +1030,7 @@ class Engine:
             return
         if norm(mv["name"]) not in MULTI_ACCURACY and not self._hits(st, i, o, mv, rng, target_is_self):
             self._say(st, "  빗나감")
-            bm.rampage = 0
+            self._rampage_abort(st, bm, rng)
             self._self_destruct_fail(st, i, mv)
             if mv["name"].lower() in ("jump kick", "high jump kick"):
                 self.hp_change(st, i, bm, -bm.maxhp // 2, "크래시")
@@ -1044,6 +1051,12 @@ class Engine:
                 self._confuse(st, bm, rng.randint(2, 5))
         elif bm.rampage:
             bm.rampage = 0
+
+    def _rampage_abort(self, st, bm, rng):
+        """난동부리기류가 막히거나 빗나갔을 때: 잠금 지속이 이번 턴으로 끝나는 경우(남은 1)에는 혼란, 아니면 잠금만 풀린다"""
+        if bm.rampage == 1 and bm.alive and norm(bm.ability) != "owntempo" and "confusion" not in bm.vol:
+            self._confuse(st, bm, rng.randint(2, 5))
+        bm.rampage = 0
 
     def _chart_immune(self, mv, D):
         t = mv["type"]
@@ -1290,6 +1303,16 @@ class Engine:
             if berry_used and D.item:
                 D.item = ""
                 berry_used = False
+            if key in ("bugbite", "pluck") and A.alive and D.item and norm(D.item).endswith("berry") \
+                    and norm(D.ability) != "stickyhold":                # 벌레먹기/쪼기: 상대의 열매를 빼앗아 바로 먹고 효과를 얻는다
+                berry, own = D.item, A.item
+                D.item, A.item = "", berry
+                for hook_ in ("on_damage_taken_hp", "on_status"):         # 먹은 즉시 열매의 효과가 나온다 (HP 조건은 보지 않는다)
+                    for src_, r_ in self.rows(A, hook_):
+                        if src_ == "item" and A.item == berry:
+                            self.apply_row(st, "item:" + r_["label"].split(":", 1)[1], r_, i, A, rng)
+                A.ate_berry = True
+                A.item = own
             deferred = (eff_mv, dmg, hp_before) if nhits == 1 else None
             self._on_hit(st, i, o, eff_mv, rng, dmg, hp_before, crit, defer=nhits == 1)
         if not landed:
@@ -1307,16 +1330,6 @@ class Engine:
         self._secondary(st, i, o, mv, rng, hit_sub)      # 대타는 상대에게 걸리는 부가효과만 막고, 자신에게 걸리는 효과(불꽃의charge 등)는 그대로 적용
         if deferred and D.alive and st.sides[o].mon is D:                  # 열매 등 HP 조건 효과: 부가효과(힐블록 등)가 끝난 뒤에 판단
             self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=deferred[0], dmg=deferred[1], hp_before=deferred[2], foe_side=i)
-        if key in ("bugbite", "pluck") and not hit_sub and landed and A.alive and D.item and norm(D.item).endswith("berry") \
-                and norm(D.ability) != "stickyhold":                # 벌레먹기/쪼기: 상대의 열매를 빼앗아 바로 먹고 효과를 얻는다
-            berry, own = D.item, A.item
-            D.item, A.item = "", berry
-            for hook_ in ("on_damage_taken_hp", "on_status"):         # 먹은 즉시 열매의 효과가 나온다 (HP 조건은 보지 않는다)
-                for src_, r_ in self.rows(A, hook_):
-                    if src_ == "item" and A.item == berry:
-                        self.apply_row(st, "item:" + r_["label"].split(":", 1)[1], r_, i, A, rng)
-            A.ate_berry = True
-            A.item = own
         if not hit_sub:
             if key == "knockoff" and D.item and norm(D.ability) != "stickyhold" and not (
                     any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
@@ -1388,7 +1401,7 @@ class Engine:
         if norm(D.ability) in ("electromorphosis", "windpower"):      # 맞으면 충전 상태 (onDamagingHit -> addVolatile('charge'))
             D.charged = 2
         if "beakblast" in D.vol and "contact" in mv["flags"] and st.sides[i].mon.alive:      # 부리캐논 대기 중 접촉 -> 공격자 화상 (타마다)
-            self.try_status(st, i, st.sides[i].mon, "brn", rng, src_side=o)
+            self.try_status(st, i, st.sides[i].mon, "brn", rng, src_side=o, ignore_sub=True)
         self.run_hook(st, o, D, "on_hit_taken", rng, mv=mv, dmg=dmg, foe_side=i)
         if D.alive:
             if not defer:
@@ -1413,7 +1426,7 @@ class Engine:
                 if kind == "dmg":
                     self.hp_change(st, i, A, -max(1, math.floor(A.maxhp * v)), k)
                 elif kind == "status":
-                    self.try_status(st, i, A, v, rng, src_side=o)
+                    self.try_status(st, i, A, v, rng, src_side=o, ignore_sub=True)
                 else:
                     self.change_boost(st, i, A, v[0], v[1], src_side=o)
 
@@ -1544,7 +1557,7 @@ class Engine:
     def _self_destruct_fail(self, st, i, mv):
         """자폭 기술(Explosion 등)은 막히거나 빗나가거나 면역이어도 쓰는 순간 쓰러진다 (Showdown selfdestruct: 'always')"""
         A = st.sides[i].mon
-        if mv["self_destruct"] and mv["category"] != "status" and A.alive:
+        if mv["self_destruct"] and mv["category"] != "status" and A.alive and norm(mv["name"]) != "finalgambit":      # 아슬아슬한승부는 맞았을 때만 (selfdestruct: ifHit)
             self.hp_change(st, i, A, -A.hp, "자폭")
 
     def _will_act(self, st, i):
