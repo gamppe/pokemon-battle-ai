@@ -1020,7 +1020,7 @@ class Engine:
                 elif r["type"] == "fail_penalty" and r["params"].get("hp_frac") and bm.alive:
                     self.hp_change(st, i, bm, -math.floor(bm.maxhp * r["params"]["hp_frac"]), "크래시")
             return
-        if foe_target and any(r["type"] == "extra_effect" and r["params"].get("effect") == "shatter_screens" for r in mv["rules"]):
+        if foe_target and not self._chart_immune(mv, D) and any(r["type"] == "extra_effect" and r["params"].get("effect") == "shatter_screens" for r in mv["rules"]):
             for k in ("reflect", "light_screen", "aurora_veil"):         # onTryHit: 명중/면역/대타보다 먼저 상대 진영의 벽을 부순다
                 if st.sides[o].screens.pop(k, None):
                     self._say(st, f"  {k} 파괴")
@@ -1492,7 +1492,7 @@ class Engine:
                     tgt.taunt = 3 + (1 if tgt.active_turns and tgt.moved else 0)
                     self._mental_herb(tgt)
             elif code == "throatchop":
-                tgt.throat = 2
+                tgt.throat = tgt.throat or 2          # 이미 걸려 있으면 갱신되지 않는다
             elif code == "healblock":
                 if not tgt.healblock:                                # 이미 걸려 있으면 지속 시간을 갱신하지 않는다
                     tgt.healblock = 5 if e["trigger_type"] == "primary" else 2
