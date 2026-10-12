@@ -1802,6 +1802,7 @@ class Engine:
                 return bool(m.item) and any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(m.item), [])) and "mega" in m.sid
             if norm(D.ability) != "stickyhold" and (A.item or D.item) and not locked(A) and not locked(D) and D.sub == 0:
                 A.item, D.item = D.item, A.item
+                A.locked = D.locked = None                      # 아이템이 새로 들어오면 구애 고정 볼라타일은 사라진다 (같은 아이템끼리 바꿔도)
                 for sd_, m_ in ((i, A), (o, D)):                 # 받은 열매는 조건이 되면 바로 먹는다 (HP 절반 이하의 시트러스 등)
                     if m_.alive and m_.item:
                         self.run_hook(st, sd_, m_, "on_damage_taken_hp", rng, only="item")
