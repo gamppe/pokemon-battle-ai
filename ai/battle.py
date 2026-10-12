@@ -74,6 +74,7 @@ class BMon:
     active_turns: int = 0
     moves_made: int = 0
     locked: str | None = None
+    last_item: str = ""                       # 마지막으로 먹은 열매 (수확 특성용)
     abil_orig: str | None = None            # 트레이스/특성교환으로 바뀌기 전의 특성 (교체하면 복원)
     recharge: bool = False
     moved: bool = False
@@ -343,6 +344,7 @@ class Engine:
     def _consume(self, st, bm):
         if norm(bm.item).endswith("berry"):
             bm.ate_berry = True
+            bm.last_item = bm.item
         bm.item = ""
 
     @staticmethod
@@ -564,6 +566,7 @@ class Engine:
                     bm.vol.discard("confusion")
                     if norm(bm.item).endswith("berry"):
                         bm.ate_berry = True
+                        bm.last_item = bm.item
                     bm.item = ""
                     break
 
@@ -1380,6 +1383,7 @@ class Engine:
             if key == "knockoff" and D.item and any(r["hook"] == "on_damage_taken_hp" for r in self.data.item_fx.get(norm(D.item), []))                     and norm(D.ability) != "stickyhold":
                 D.item = ""
             if berry_used and D.item:
+                D.last_item = D.item
                 D.item = ""
                 berry_used = False
             if key in ("bugbite", "pluck") and A.alive and D.item and norm(D.item).endswith("berry") \
@@ -1391,7 +1395,30 @@ class Engine:
                         if src_ == "item" and A.item == berry:
                             self.apply_row(st, "item:" + r_["label"].split(":", 1)[1], r_, i, A, rng)
                 A.ate_berry = True
+                A.last_item = berry
                 A.item = own
+            if key == "fling" and A.item and D.alive and not hit_sub:                       # 던지기: 도구를 상대에게 던져 효과를 주고 도구는 사라진다
+                thrown = norm(A.item)
+                A.item = ""
+                if thrown.endswith("berry"):
+                    own_ = D.item
+                    D.item = thrown
+                    for hook_ in ("on_damage_taken_hp", "on_status"):
+                        for src_, r_ in self.rows(D, hook_):
+                            if src_ == "item" and D.item == thrown:
+                                self.apply_row(st, "item:" + r_["label"].split(":", 1)[1], r_, o, D, rng)
+                    D.ate_berry = True
+                    D.last_item = thrown
+                    D.item = own_
+                elif thrown in ("flameorb", "toxicorb", "lightball", "poisonbarb"):
+                    self.try_status(st, o, D, {"flameorb": "brn", "toxicorb": "tox", "lightball": "par", "poisonbarb": "psn"}[thrown], rng, src_side=i)
+                elif thrown in ("kingsrock", "razorfang"):
+                    if norm(D.ability) != "shielddust":
+                        D.vol.add("flinch")
+                elif thrown == "whiteherb":
+                    for k_ in list(D.boosts):
+                        if D.boosts[k_] < 0:
+                            D.boosts[k_] = 0
             deferred = (eff_mv, dmg, hp_before) if nhits == 1 else None
             self._on_hit(st, i, o, eff_mv, rng, dmg, hp_before, crit, defer=nhits == 1)
         if not landed:
@@ -1413,6 +1440,9 @@ class Engine:
         self._secondary(st, i, o, mv, rng, hit_sub)      # 대타는 상대에게 걸리는 부가효과만 막고, 자신에게 걸리는 효과(불꽃의charge 등)는 그대로 적용
         if deferred and D.alive and st.sides[o].mon is D:                  # 열매 등 HP 조건 효과: 부가효과(힐블록 등)가 끝난 뒤에 판단
             self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=deferred[0], dmg=deferred[1], hp_before=deferred[2], foe_side=i)
+        if not hit_sub and key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.ability) != "stickyhold" and landed and not (
+                any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
+            A.item, D.item = D.item, ""                           # 도둑질/탐내기: 도구를 빼앗는다 (자신이 도구가 없을 때)
         if not hit_sub:
             if key == "knockoff" and D.item and norm(D.ability) != "stickyhold" and not (
                     any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
@@ -1874,6 +1904,8 @@ class Engine:
                 for sd_, m_ in ((i, A), (o, D)):                 # 받은 열매는 조건이 되면 바로 먹는다 (HP 절반 이하의 시트러스 등)
                     if m_.alive and m_.item:
                         self.run_hook(st, sd_, m_, "on_damage_taken_hp", rng, only="item")
+                        if m_.alive and m_.status:
+                            self._status_item_cure(st, m_, m_.status)           # 받은 상태이상 치료 열매는 바로 먹는다
             return
         if key == "painsplit":
             if (D.sub == 0 or "bypasssub" in mv["flags"]):
@@ -2115,6 +2147,11 @@ class Engine:
                 bm.perish -= 1
                 if bm.perish == 0:
                     self.hp_change(st, i, bm, -bm.hp, "멸망의노래")
+            if bm.alive and norm(bm.ability) == "harvest" and not bm.item and bm.last_item:      # 수확: 먹은 열매가 (맑음이면 확실히, 아니면 50%) 되살아난다
+                if self.wx(st) == "sun" or rng.random() < 0.5:
+                    bm.item, bm.last_item = bm.last_item, ""
+                    self.run_hook(st, i, bm, "on_damage_taken_hp", rng, only="item")           # 되살아난 열매는 조건이 맞으면 바로 먹는다
+
         for i in (0, 1):
             st.sides[i].mon.vol.discard("roost")
         for i in (0, 1):

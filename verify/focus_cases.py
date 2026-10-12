@@ -163,7 +163,7 @@ def team_knockoff(rng):
     atk = rng.choice(["garchomp", "kingambit", "hydreigon", "tyranitar", "weavile", "meowscarada", "bisharp"])
     atk = atk if atk in data.pokemon else "garchomp"
     mv = [m for m in ["knockoff", "thief", "covet", "bugbite", "pluck", "fling", "earthquake", "uturn", "closecombat", "suckerpunch", "protect", "trick", "switcheroo"] if m in data.moves]
-    team.append(mk(atk, rng, None, rng.choice(BERRY_ITEMS + ["Black Glasses", "Choice Band"]), rng.sample(mv, 4), must=["knockoff"] if rng.random() < 0.7 else []))
+    team.append(mk(atk, rng, None, rng.choice(BERRY_ITEMS + ["Black Glasses", "Choice Scarf"]), rng.sample(mv, 4), must=["knockoff"] if rng.random() < 0.7 else []))
     rng.shuffle(team)
     return team
 

@@ -258,6 +258,23 @@ def apply_rows(c: Ctx, chain: Chain, rows, me, foe, kinds=("mult",), cat=None):
             c.used.append(r["label"])
 
 
+_FLING = None
+
+
+def _fling_powers():
+    """Showdown 도구 데이터(etl/cache_sd_items.json)의 던지기 위력 -- DB 표에 없는 도구를 보충한다"""
+    global _FLING
+    if _FLING is None:
+        import json
+        import os
+        try:
+            raw = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "etl", "cache_sd_items.json"), encoding="utf-8"))
+            _FLING = {k: v["fling"]["basePower"] for k, v in raw.items() if v.get("fling")}
+        except Exception:
+            _FLING = {}
+    return _FLING
+
+
 def speed(c: Ctx, mon: Mon):
     """Showdown getStat('spe'): 능력 단계 -> ModifySpe 연쇄(특성/도구) -> 마비(속도 절반, 속보 특성은 무시)"""
     table = [1, 1.5, 2, 2.5, 3, 3.5, 4]
@@ -393,7 +410,8 @@ def base_power(c: Ctx):
                 bp = p["per"] * c.hit
             elif f == "item_fling_power":        # 내던지기: 지닌 도구에 따라 위력
                 it = c.A.item
-                table = {norm(k): v for k, v in p["table"].items()}
+                table = dict(_fling_powers())
+                table.update({norm(k): v for k, v in p["table"].items()})
                 if not it or not item_active(c, c.A) or norm(it) not in table:
                     c.fail = "fling_fail"
                 else:
