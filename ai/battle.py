@@ -1157,6 +1157,8 @@ class Engine:
                     if r2["hook"] == "on_hit_taken" and r2["kind"] == "stat_stage" and mv["type"] in str(r2["cond"].get("move_type", "")).split("|"):
                         self.change_boost(st, o, D, r2["code"], int(r2["value"]))
                 return True
+            if r["kind"] == "immune" and code.startswith("flag:") and code[5:] in mv["flags"] and mv["target"] not in NON_FOE_TARGETS:      # 방음/방탄/방진 등 기술 분류 면역
+                return True
             if r["kind"] == "immune" and code == "priority_moves" and self._priority(st, i, mv) > 0:
                 return True
             if r["kind"] == "immune" and code == "move_class:status" and mv["category"] == "status":

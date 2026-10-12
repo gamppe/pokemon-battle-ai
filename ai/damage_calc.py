@@ -604,6 +604,8 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
         apply_rows(c, fch, fx_rows(c, A, "modify_dmg_dealt"), A, D)
         apply_rows(c, fch, fx_rows(c, D, "modify_dmg_taken"), D, A)
         for sc in ([] if has_ability_code(c, A, "substitute_and_screens") else F.screens):   # 침투: 벽 무시
+            if sc == "aurora_veil" and (("reflect" in F.screens and mv["category"] == "physical") or ("light_screen" in F.screens and mv["category"] == "special")):
+                continue                                              # 오로라베일은 같은 분류의 리플렉터/빛의장막이 있으면 따로 적용되지 않는다
             for row in data.state_fx.get(sc, []):
                 if row["hook"] == "modify_dmg_taken" and cond_ok(c, row["cond"], D, A, row["label"]) \
                         and (row["cond"].get("move_category", "").split("|") and mv["category"] in row["cond"]["move_category"].split("|")):
