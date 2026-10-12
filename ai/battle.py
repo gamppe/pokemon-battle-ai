@@ -613,9 +613,11 @@ class Engine:
         for fn in pend:
             fn()
 
-    def _run_switch_in(self, st, side, bm, rng):
+    def _run_switch_in(self, st, side, bm, rng, only=None):
         foe = st.sides[1 - side].mon
         for src, r in self.rows(bm, "switch_in"):
+            if only and src != only:
+                continue
             if not self._cond_ok(r["cond"], st, side, bm):
                 continue
             if src == "item" and not bm.item:
@@ -1590,6 +1592,8 @@ class Engine:
             if A.sub == 0 and A.hp > cost:
                 self.hp_change(st, i, A, -cost, "대타출동")
                 A.sub = cost
+                A.trap = 0                                    # 대타를 만들면 걸려 있던 속박이 풀린다 (Showdown: substitute onStart 에서 partiallytrapped 제거)
+                A.vol.discard("bind"); A.vol.discard("bindband")
             return
         if key == "curse":
             if "Ghost" in A.types:
@@ -1621,8 +1625,9 @@ class Engine:
             if D.sub == 0 or "bypasssub" in mv["flags"]:
                 if norm(A.ability) not in NO_SWAP and norm(D.ability) not in NO_SWAP:
                     A.ability, D.ability = D.ability, A.ability
-                    for src_, r_ in self.rows(A, "switch_in") if False else []:
-                        pass
+                    for sd_, m_ in ((i, A), (o, D)):                 # 바꿔 받은 특성의 등장 효과가 바로 발동한다 (사이코메이커, 위협 등)
+                        if m_.alive:
+                            self._run_switch_in(st, sd_, m_, rng, only="ability")
             return
         if key == "courtchange":
             a, b = st.sides[i], st.sides[1 - i]
