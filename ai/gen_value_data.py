@@ -31,8 +31,19 @@ def _init(snap, vocab_path):
     _G.update(data=data, eng=ObsEngine(data), meta_src=MetaTeams(meta), replay_src=replay, vocab=Vocab.load(vocab_path))
 
 
+def rollout_value(eng, st, rng, k, eps):
+    """상태 st 에서 양쪽 휴리스틱으로 끝까지 k번 굴린 0번 시점 평균 승률"""
+    from .policy import play_out
+    tot = 0.0
+    for _ in range(k):
+        s = eng.clone(st)
+        w = play_out(eng, s, rng, opp_eps=eps)
+        tot += 1.0 if w == 0 else (0.5 if w == -1 else 0.0)
+    return tot / k
+
+
 def play(args):
-    gseed = args
+    gseed, k_roll, every = args
     eng, vocab = _G["eng"], _G["vocab"]
     rng = random.Random(gseed)
     src = _G["replay_src"] if (_G["replay_src"] is not None and rng.random() < 0.5) else _G["meta_src"]
@@ -41,15 +52,21 @@ def play(args):
     eps = [rng.choice([0.05, 0.15, 0.3]), rng.choice([0.05, 0.15, 0.3])]
     states = []
     while st.winner is None and st.turn < 60:
-        for me in (0, 1):
-            c, n, g = encode(eng, vocab, st, me)
-            states.append((me, c, n, g, st.turn))
+        if k_roll and st.turn % every == 0:           # 롤아웃 평균 라벨 (잡음 감소)
+            v0 = rollout_value(eng, st, rng, k_roll, eps[0])
+            for me in (0, 1):
+                c, n, g = encode(eng, vocab, st, me)
+                states.append((me, c, n, g, st.turn, v0 if me == 0 else 1.0 - v0))
+        elif not k_roll:
+            for me in (0, 1):
+                c, n, g = encode(eng, vocab, st, me)
+                states.append((me, c, n, g, st.turn, None))
         acts = [greedy_action(eng, st, i, rng, eps=eps[i]) for i in (0, 1)]
         eng.step(st, acts, rng, pol)
     w = st.winner
     out_c, out_n, out_g, out_y, out_t = [], [], [], [], []
-    for me, c, n, g, t in states:
-        y = 0.5 if w in (-1, None) else (1.0 if w == me else 0.0)
+    for me, c, n, g, t, soft in states:
+        y = soft if soft is not None else (0.5 if w in (-1, None) else (1.0 if w == me else 0.0))
         out_c.append(c); out_n.append(n); out_g.append(g); out_y.append(y); out_t.append(t)
     return out_c, out_n, out_g, out_y, out_t, gseed
 
@@ -62,6 +79,8 @@ def main():
     ap.add_argument("--out", default="data/value")
     ap.add_argument("--snap", type=int, default=33)
     ap.add_argument("--seed0", type=int, default=100000)
+    ap.add_argument("--rollouts", type=int, default=0, help=">0 이면 상태마다 이 횟수만큼 굴린 평균 승률을 라벨로 사용")
+    ap.add_argument("--every", type=int, default=2, help="롤아웃 라벨은 이 턴 간격마다 저장")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     vocab_path = os.path.join(a.out, "vocab.json")
@@ -75,7 +94,7 @@ def main():
         seeds = [a.seed0 + start + k for k in range(min(a.chunk, a.games - start))]
         C, N, G, Y, T = [], [], [], [], []
         with cf.ProcessPoolExecutor(max_workers=a.workers, initializer=_init, initargs=(a.snap, vocab_path)) as ex:
-            for c, n, g, y, t, _ in ex.map(play, seeds, chunksize=8):
+            for c, n, g, y, t, _ in ex.map(play, [(sd, a.rollouts, a.every) for sd in seeds], chunksize=8):
                 C += c; N += n; G += g; Y += y; T += t
         np.savez_compressed(path, cat=np.array(C), num=np.array(N), glob=np.array(G), y=np.array(Y, dtype=np.float32), turn=np.array(T, dtype=np.int16))
         print(f"저장 {path}: 상태 {len(Y)}개 (평균 승률 {np.mean(Y):.3f})", flush=True)
