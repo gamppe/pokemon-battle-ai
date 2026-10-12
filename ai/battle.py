@@ -1433,9 +1433,6 @@ class Engine:
                 D.last_item = D.item
                 D.item = ""
                 berry_used = False
-            if key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.ability) != "stickyhold" and not (
-                    any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
-                A.item, D.item = D.item, ""                       # 도둑질/탐내기: 도구를 빼앗는다 (자신이 도구가 없을 때, 열매 소비보다 먼저)
             if key in ("bugbite", "pluck") and A.alive and D.item and norm(D.item).endswith("berry") \
                     and norm(D.ability) != "stickyhold" and not any(r["code"] == "foe_cannot_eat_berries" for r in self.data.ability_fx.get(norm(D.ability), [])):                # 벌레먹기/쪼기: 상대의 열매를 빼앗아 바로 먹고 효과를 얻는다
                 berry, own = D.item, A.item
@@ -1473,6 +1470,9 @@ class Engine:
                             D.boosts[k_] = 0
             deferred = (eff_mv, dmg, hp_before) if nhits == 1 else None
             self._on_hit(st, i, o, eff_mv, rng, dmg, hp_before, crit, defer=nhits == 1)
+            if key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.ability) != "stickyhold" and not (
+                    any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
+                A.item, D.item = D.item, ""                       # 도둑질/탐내기: 접촉 반격(울퉁불퉁멧 등) 뒤, 열매 소비보다 먼저 도구를 빼앗는다
         if not landed:
             return
         self._landed = True
