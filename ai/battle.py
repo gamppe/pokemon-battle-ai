@@ -280,6 +280,7 @@ class Engine:
         bm.hp = max(0, min(bm.maxhp, bm.hp + delta))
         if before and not bm.hp:
             bm.status = None
+            bm.boosts = {}                                  # 쓰러지면 능력 단계도 초기화된다 (Showdown clearVolatile)
             self._say(st, f"  {bm.name} 쓰러짐 ({why})")
         return bm.hp - before
 
