@@ -1101,6 +1101,7 @@ class Engine:
         self._landed = False
         late_item = False
         hit_sub = False
+        deferred = None
         for h in range(1, nhits + 1):
             if not D.alive or not A.alive:
                 break
@@ -1204,7 +1205,8 @@ class Engine:
             if berry_used and D.item:
                 D.item = ""
                 berry_used = False
-            self._on_hit(st, i, o, eff_mv, rng, dmg, hp_before, crit)
+            deferred = (eff_mv, dmg, hp_before) if nhits == 1 else None
+            self._on_hit(st, i, o, eff_mv, rng, dmg, hp_before, crit, defer=nhits == 1)
         if not landed:
             return
         self._landed = True
@@ -1218,6 +1220,8 @@ class Engine:
         if A.alive and landed:
             self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="ability")
         self._secondary(st, i, o, mv, rng, hit_sub)      # 대타는 상대에게 걸리는 부가효과만 막고, 자신에게 걸리는 효과(불꽃의charge 등)는 그대로 적용
+        if deferred and D.alive and st.sides[o].mon is D:                  # 열매 등 HP 조건 효과: 부가효과(힐블록 등)가 끝난 뒤에 판단
+            self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=deferred[0], dmg=deferred[1], hp_before=deferred[2], foe_side=i)
         if key in ("bugbite", "pluck") and not hit_sub and landed and A.alive and D.item and norm(D.item).endswith("berry") \
                 and norm(D.ability) != "stickyhold":                # 벌레먹기/쪼기: 상대의 열매를 빼앗아 바로 먹고 효과를 얻는다
             berry, own = D.item, A.item
@@ -1286,14 +1290,16 @@ class Engine:
             return {"gem"}
         return set()
 
-    def _on_hit(self, st, i, o, mv, rng, dmg, hp_before, crit):
-        """피격 후 처리: 방어자의 on_hit_taken / on_damage_taken_hp / (급소) on_crit_taken"""
+    def _on_hit(self, st, i, o, mv, rng, dmg, hp_before, crit, defer=False):
+        """피격 후 처리: 방어자의 on_hit_taken / on_damage_taken_hp / (급소) on_crit_taken.
+        defer=True 면 HP 조건 효과(열매 등)는 부가효과 뒤로 미룬다 (Showdown 은 열매를 Update 에서 먹는다)"""
         D = st.sides[o].mon
         if norm(D.item) == "airballoon":
             D.item = ""
         self.run_hook(st, o, D, "on_hit_taken", rng, mv=mv, dmg=dmg, foe_side=i)
         if D.alive:
-            self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=mv, dmg=dmg, hp_before=hp_before, foe_side=i)
+            if not defer:
+                self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=mv, dmg=dmg, hp_before=hp_before, foe_side=i)
             if crit:
                 self.run_hook(st, o, D, "on_crit_taken", rng, mv=mv, dmg=dmg, foe_side=i)
 
