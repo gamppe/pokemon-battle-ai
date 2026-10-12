@@ -1014,7 +1014,8 @@ class Engine:
                 self._say(st, "  실패")
             return
         counter_fail = norm(mv["name"]) in ("counter", "mirrorcoat", "metalburst") and not st.last_hit[i]
-        if norm(bm.ability) in ("protean", "libero") and "protean" not in bm.vol and not counter_fail and bm.types != [mv["type"]]:
+        if norm(bm.ability) in ("protean", "libero") and "protean" not in bm.vol and not counter_fail and bm.types != [mv["type"]] \
+                and (mv["target"] in NON_FOE_TARGETS or st.sides[1 - i].mon.alive):      # 대상이 없으면 변환기 계열 특성은 발동하지 않는다
             bm.vol.add("protean")
             bm.types = [mv["type"]]
         o = 1 - i
