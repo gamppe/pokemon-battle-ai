@@ -47,7 +47,7 @@
 
 ## 남은 불일치 / 한계
 - 럼열매 + 피로 혼란 + 레드카드가 겹치는 순서(드문 경우). (Roar 와 교체가 겹치던 `s556` 은 해결됨)
-- 미구현(메타 비중 낮음): Cud Chew, Early Bird, Gluttony, Lightning Rod 유도, Magician/Pickpocket, Moody, Opportunist, Parental Bond, Pickup, Pressure(PP 없음), Quick Draw, Screen Cleaner, Stall, Symbiosis, Liquid Voice, 바위/Choice Band·Specs 같은 챔피언스에 없는 도구
+- 미구현(메타 비중 낮음): Cud Chew, Early Bird, Gluttony, Lightning Rod 유도, Magician/Pickpocket, Moody, Opportunist, Parental Bond, Pickup, Pressure(PP 없음), Quick Draw, Screen Cleaner, Stall, Symbiosis, Liquid Voice, Choice Band·Specs 같은 챔피언스에 없는 도구
 - PP 일반 처리 없음 (되살리기만 특수 처리). 장기전 AI 판단에는 PP 가 필요할 수 있음
 - Poison Touch(독수)가 Showdown 에서 에써르(Indeedee)에게 걸리지 않는 현상은 원인 미확인 (사용자: 차차 찾기로 함)
 - 미지원 효과 집계는 `eng.unsupported`
