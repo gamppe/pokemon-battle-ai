@@ -15,6 +15,7 @@ function mkSet(s, idx) {
     gender: s.gender || 'N', evs: sp, ivs: {hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31}, level: 50};
 }
 
+const VOLS = new Set(['confusion', 'leechseed', 'curse', 'focusenergy', 'taunt', 'encore', 'disable', 'substitute', 'healblock', 'yawn']);   // 비교하는 임시 상태
 function summary(battle) {
   // 턴이 끝난 시점에는 열매/허브 등이 다음 Update 이벤트에서 소모되도록 대기 중일 수 있다 (엔진은 즉시 처리) -> 읽기 전에 한 번 돌려 맞춘다
   battle.eachEvent('Update');
@@ -23,7 +24,8 @@ function summary(battle) {
     for (const p of side.pokemon) {
       const b = {};
       for (const [k, v] of Object.entries(p.boosts)) if (v) b[k] = v;
-      o[Number(p.name)] = {hp: p.hp, st: p.status || '', b, it: p.item || '', fnt: p.fainted ? 1 : 0};
+      const v = p.isActive && !p.fainted ? Object.keys(p.volatiles).filter(k => VOLS.has(k)).sort().join(',') : '';
+      o[Number(p.name)] = {hp: p.hp, st: p.status || '', b, it: p.item || '', fnt: p.fainted ? 1 : 0, v};
     }
     return o;
   });

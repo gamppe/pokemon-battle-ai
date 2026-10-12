@@ -9,4 +9,8 @@ for sd in $2; do
   python -X utf8 verify/verify_turns.py --n 1000 --runs 100 --turns 2 --seed $sd --snap ${SNAP:-32} > verify/out/sweep_run.txt 2>&1; head -1 verify/out/sweep_run.txt
   cp verify/out/turns_mismatch.json verify/out/sweep/t2_$sd.json; cp verify/out/turns_in.json verify/out/sweep/t2_${sd}_in.json
 done
+for sd in $3; do      # 깊은 시나리오: 4턴 + 교체 15%
+  python -X utf8 verify/verify_turns.py --n 600 --runs 100 --turns 4 --switch 0.15 --seed $sd --snap ${SNAP:-32} > verify/out/sweep_run.txt 2>&1; head -1 verify/out/sweep_run.txt
+  cp verify/out/turns_mismatch.json verify/out/sweep/d4_$sd.json; cp verify/out/turns_in.json verify/out/sweep/d4_${sd}_in.json
+done
 echo SWEEP_DONE

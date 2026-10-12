@@ -1591,7 +1591,7 @@ class Engine:
         if key == "encore":
             if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.encore and D.last_move and D.last_move not in ("encore",) and \
                     D.last_move not in D.spent and "failencore" not in self.data.moves[D.last_move]["flags"]:        # PP 가 0 인 기술(되살리기)에는 실패
-                D.encore = 3
+                D.encore = 4 if D.moved else 3                    # 이번 턴에 이미 움직인 상대는 1턴 더 (Showdown: willMove 가 아니면 duration++)
                 self._mental_herb(D)
             else:
                 self._sfail = True
