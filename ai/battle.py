@@ -760,11 +760,15 @@ class Engine:
         if st.winner is None:
             self._end_of_turn(st, rng)
             self._check_winner(st)
-        dead = [i for i in (0, 1) if st.winner is None and not st.sides[i].mon.alive]
-        if len(dead) == 2:      # 동시에 쓰러졌으면 쓰러진 포켓몬의 속도가 빠른 쪽이 먼저 나온다 (나중에 나온 쪽의 날씨/필드 특성이 이김)
-            dead.sort(key=lambda i: ((1 if st.trick_room else -1) * self.speed_of(st, i), rng.random()))
-        for i in dead:
-            self._replace(st, i, rng, switch_policy)
+        for _ in range(6):      # 교체해 들어오자마자 해저드로 쓰러지면 바로 다음 포켓몬을 낸다
+            self._check_winner(st)
+            dead = [i for i in (0, 1) if st.winner is None and not st.sides[i].mon.alive and st.sides[i].alive_idx()]
+            if not dead:
+                break
+            if len(dead) == 2:      # 동시에 쓰러졌으면 쓰러진 포켓몬의 속도가 빠른 쪽이 먼저 나온다 (나중에 나온 쪽의 날씨/필드 특성이 이김)
+                dead.sort(key=lambda i: ((1 if st.trick_room else -1) * self.speed_of(st, i), rng.random()))
+            for i in dead:
+                self._replace(st, i, rng, switch_policy)
         for i in (0, 1):
             st.sides[i].mon.active_turns += 1
         self._check_winner(st)
@@ -963,11 +967,13 @@ class Engine:
                 ("quickguard" in D.vol and self._priority(st, i, mv) > 0) or
                 ("wideguard" in D.vol and mv["target"] in ("allAdjacent", "allAdjacentFoes"))):
             self._say(st, "  막혔다")
+            bm.last_failed = False                  # 막힌 기술은 실패가 아니다 (NOT_FAIL) -> Temper Flare 등의 '직전 기술 실패' 조건이 아님
             self._self_destruct_fail(st, i, mv)
             return
         if "protecting" in D.vol and "protect" in mv["flags"] and foe_target and not (
                 mv["category"] == "status" and any(k in D.vol for k in ("kingsshield", "silktrap", "obstruct"))):
             self._say(st, "  막혔다")
+            bm.last_failed = False
             self._self_destruct_fail(st, i, mv)
             self._contact_punish(st, i, o, mv, rng)
             for r in mv["rules"]:
@@ -1836,6 +1842,9 @@ class Engine:
                 st.weather = None
         for i in order:
             bm = st.sides[i].mon
+            if bm.alive and st.weather == "sand" and not any(t in ("Rock", "Ground", "Steel") for t in bm.types) and \
+                    norm(bm.ability) not in ("magicguard", "overcoat", "sandveil", "sandrush", "sandforce") and norm(bm.item) != "safetygoggles":
+                self.hp_change(st, i, bm, -max(1, bm.maxhp // 16), "모래바람")
             fut = st.sides[i].future
             if fut:                                              # 미래예지: 3 -> 0 이 되는 턴 끝에 적중 (쓰러진 슬롯이면 사라진다)
                 fut["left"] -= 1
@@ -1852,9 +1861,6 @@ class Engine:
                     S_.wish = None
             if not bm.alive:
                 continue
-            if st.weather == "sand" and not any(t in ("Rock", "Ground", "Steel") for t in bm.types) and \
-                    norm(bm.ability) not in ("magicguard", "overcoat", "sandveil", "sandrush", "sandforce") and norm(bm.item) != "safetygoggles":
-                self.hp_change(st, i, bm, -max(1, bm.maxhp // 16), "모래바람")
             if st.terrain == "grassy" and bm.alive and self._grounded(bm):
                 self.hp_change(st, i, bm, max(1, bm.maxhp // 16), "그래스필드")
             if bm.alive:
