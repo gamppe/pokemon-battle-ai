@@ -63,6 +63,10 @@ class BMon:
     healblock: int = 0
     yawn: int = 0
     rampage: int = 0
+    prev_move: str = ""
+    spent: set = field(default_factory=set)         # PP 1 짜리 기술(되살리기)을 이미 쓴 경우
+    trap_src: tuple | None = None
+    orig: tuple | None = None            # 변신 전 (spec, sid, types, ability)
     encore: int = 0
     last_move: str = ""
     last_attacker: tuple | None = None
@@ -107,6 +111,7 @@ class State:
     weather_turns: int = 0
     terrain: str | None = None
     terrain_turns: int = 0
+    trick_room: int = 0
     turn: int = 0
     winner: int | None = None        # 0 / 1 / -1(무승부)
     last_hit: list = field(default_factory=lambda: [0, 0])
@@ -150,10 +155,17 @@ class Engine:
         self.unsupported[why] = self.unsupported.get(why, 0) + 1
 
     # ───────────────────────── 계산 도우미 ─────────────────────────
+    @staticmethod
+    def types_of(bm):
+        if "roost" in bm.vol and "Flying" in bm.types:
+            t = [x for x in bm.types if x != "Flying"]
+            return t or ["Normal"]
+        return list(bm.types)
+
     def spec_of(self, bm: BMon):
         s = bm.spec
         return dict(sid=bm.sid, ability=bm.ability, item=bm.item, nature=s.get("nature", "Serious"), sp=s.get("sp", {}),
-                    boosts=dict(bm.boosts), status=bm.status, hp_frac=bm.hp / bm.maxhp, gender=s.get("gender", "N"), types=list(bm.types))
+                    boosts=dict(bm.boosts), status=bm.status, hp_frac=bm.hp / bm.maxhp, gender=s.get("gender", "N"), types=self.types_of(bm))
 
     def field_for(self, st, defender_side):
         scr = tuple(k for k in SCREENS if st.sides[defender_side].screens.get(k, 0) > 0)
@@ -341,18 +353,25 @@ class Engine:
                     if bm.boosts[k] < 0:
                         bm.boosts[k] = 0
             elif code == "force_attacker_switch":
-                def red():
+                def red(holder=bm):
                     cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
-                    if cand and st.sides[o].mon.alive:
+                    if cand and holder.alive and st.sides[o].mon.alive and holder.item:
+                        holder.item = ""
                         self._switch_in(st, o, self._rng, to=self._rng.choice(cand))
                 self._pending.append(red)
+                applied = False
             elif code == "self_switch_out":
-                def eject():
+                def eject(holder=bm):
                     cand = [j for j in st.sides[side].alive_idx() if j != st.sides[side].active]
-                    if cand and st.sides[side].mon.alive:
+                    if cand and holder.alive and st.sides[side].mon is holder and holder.item:
+                        holder.item = ""
                         j = self._policy(st, side) if self._policy else cand[0]
                         self._switch_in(st, side, self._rng, to=j if j in cand else cand[0])
                 self._pending.append(eject)
+                applied = False
+            elif code == "transform":
+                if foe.alive:
+                    self._transform(st, bm, foe)
             elif code in ("aegislash_stance", "illusion", "choice_lock", "grounded", "mega_stone", "first_hit_zero_damage"):
                 applied = False
             else:
@@ -365,8 +384,10 @@ class Engine:
             self._consume(st, bm)
         return applied
 
-    def run_hook(self, st, side, bm, hook, rng, mv=None, dmg=0, hp_before=None, foe_side=None):
+    def run_hook(self, st, side, bm, hook, rng, mv=None, dmg=0, hp_before=None, foe_side=None, only=None):
         for src, r in self.rows(bm, hook):
+            if only and src != only:
+                continue
             if not self._cond_ok(r["cond"], st, side, bm, mv, hp_before):
                 continue
             if src == "item" and not bm.item:
@@ -447,6 +468,18 @@ class Engine:
             self.try_status(st, src_side, st.sides[src_side].mon, code, rng, src_side=side)
         return True
 
+    def _transform(self, st, bm, tgt):
+        if bm.orig or tgt.orig or tgt.sub > 0 or not tgt.alive:
+            return False
+        bm.orig = (bm.spec, bm.sid, list(bm.types), bm.ability)
+        ts = tgt.spec
+        bm.spec = dict(ts, moves=list(ts["moves"]), item=bm.item)
+        bm.sid, bm.types, bm.ability = tgt.sid, list(tgt.types), tgt.ability
+        bm.boosts = dict(tgt.boosts)
+        bm.locked = None
+        self._say(st, f"  {bm.name} → {tgt.name} 로 변신")
+        return True
+
     def _status_item_cure(self, st, bm, code):
         for src, r in self.rows(bm, "on_status"):
             if r["kind"] == "cure_status" and bm.item and src == "item":
@@ -459,7 +492,7 @@ class Engine:
     def _grounded(self, bm):
         if norm(bm.item) == "ironball":
             return True
-        return "Flying" not in bm.types and norm(bm.ability) not in ("levitate", "eelevate") and norm(bm.item) != "airballoon"
+        return "Flying" not in self.types_of(bm) and norm(bm.ability) not in ("levitate", "eelevate") and norm(bm.item) != "airballoon"
 
     # ───────────────────────── 교체 ─────────────────────────
     def _switch_in(self, st, side, rng, to=None, carry=False):
@@ -471,6 +504,9 @@ class Engine:
                 passed = (dict(old.boosts), old.sub, {v for v in old.vol if v in ("leechseed", "focusenergy")})
             old.boosts, old.vol, old.locked, old.protect_n, old.recharge = {}, set(), None, 0, False
             old.sub, old.charge, old.semi, old.trap = 0, None, None, 0
+            if old.orig:
+                old.spec, old.sid, old.types, old.ability = old.orig
+                old.orig = None
             for src, r in self.rows(old, "switch_out"):
                 if r["kind"] == "heal_frac" and old.alive:
                     old.hp = min(old.maxhp, old.hp + math.floor(old.maxhp * _frac(r["value"]) + 1e-9))
@@ -551,12 +587,14 @@ class Engine:
             return [("r", 0)]
         moves = bm.spec["moves"]
         acts = []
+        no_revive = {k for k, m in enumerate(moves) if norm(m) in bm.spent}
         if bm.moves_made >= 1:           # 등장 직후 한 번만 쓸 수 있는 기술(猫だまし 등)은 선택 불가
             first_only = {k for k, m in enumerate(moves) if any(
                 r["type"] == "use_condition" and r["params"].get("requires") == "first_turn_after_switch_in"
                 for r in self.data.moves[norm(m)]["rules"])}
         else:
             first_only = set()
+        first_only |= no_revive
         if bm.charge:
             return [("m", next(k for k, m in enumerate(moves) if norm(m) == bm.charge))]
         if bm.rampage and bm.last_move:
@@ -607,7 +645,7 @@ class Engine:
             m.moved = False
         self._say(st, f"== 턴 {st.turn} ==")
         sw = [i for i in (0, 1) if acts[i][0] == "s"]
-        for i in sorted(sw, key=lambda i: (-self.speed_of(st, i), rng.random())):
+        for i in sorted(sw, key=lambda i: ((1 if st.trick_room else -1) * self.speed_of(st, i), rng.random())):
             self._switch_in(st, i, rng, to=acts[i][1])
         movers = []
         for i in (0, 1):
@@ -615,7 +653,7 @@ class Engine:
                 bm = st.sides[i].mon
                 mv = self.data.moves[norm(bm.spec["moves"][acts[i][1]])] if acts[i][0] == "m" else None
                 movers.append((i, self._priority(st, i, mv) if mv else 0, self.speed_of(st, i), rng.random()))
-        movers.sort(key=lambda x: (-x[1], -x[2], x[3]))
+        movers.sort(key=lambda x: (-x[1], (x[2] if st.trick_room else -x[2]), x[3]))
         starts = [st.sides[0].active, st.sides[1].active]
         for (i, pr, spd, _) in movers:
             if st.sides[i].active != starts[i]:
@@ -735,8 +773,11 @@ class Engine:
         if norm(bm.item) in CHOICE:
             bm.locked = mname
         bm.moved = True
+        bm.prev_move = bm.last_move
         if norm(mname) not in ("encore",):
             bm.last_move = norm(mname)
+        if norm(mname) == "revivalblessing":
+            bm.spent.add("revivalblessing")
         chg = next((r["params"] for r in mv["rules"] if r["type"] == "charge_move"), None)
         if chg is not None:
             if bm.charge == norm(mname):                      # 두 번째 턴: 공격
@@ -773,7 +814,8 @@ class Engine:
             return
         if foe_target and self._ability_blocks(st, i, o, mv, rng):
             return
-        if "protecting" in D.vol and "protect" in mv["flags"] and foe_target:
+        if "protecting" in D.vol and "protect" in mv["flags"] and foe_target and not (
+                mv["category"] == "status" and any(k in D.vol for k in ("kingsshield", "silktrap", "obstruct"))):
             self._say(st, "  막혔다")
             self._contact_punish(st, i, o, mv, rng)
             for r in mv["rules"]:
@@ -804,7 +846,7 @@ class Engine:
 
     def _chart_immune(self, mv, D):
         t = mv["type"]
-        if any(self.data.type_chart.get((t, x), 1.0) == 0 for x in D.types):
+        if any(self.data.type_chart.get((t, x), 1.0) == 0 for x in self.types_of(D)):
             return not (t == "Ground" and any(r["code"] == "ground_immunity" for r in self.data.item_fx.get(norm(D.item), [])))
         return t == "Ground" and not self._grounded(D)
 
@@ -912,7 +954,8 @@ class Engine:
     def _damage_move(self, st, i, o, mv, rng, switch_policy):
         A, D = st.sides[i].mon, st.sides[o].mon
         key = norm(mv["name"])
-        nhits = mv["max_hits"] if mv["min_hits"] == mv["max_hits"] else (
+        hit_rule = next((r["params"].get("hits") for r in mv["rules"] if r["type"] == "power_formula" and r["params"].get("formula") == "hit_index"), None)
+        nhits = hit_rule if hit_rule else mv["max_hits"] if mv["min_hits"] == mv["max_hits"] else (
             rng.choices([2, 3, 4, 5], [35, 35, 15, 15])[0] if (mv["min_hits"], mv["max_hits"]) == (2, 5) else rng.randint(mv["min_hits"], mv["max_hits"]))
         if norm(A.ability) == "skilllink" and mv["max_hits"] == 5:
             nhits = 5
@@ -957,6 +1000,10 @@ class Engine:
                 crit = self._crit(mv, A, D, rng)
                 r = self.rolls(st, i, o, key, crit, hit=h)
                 if r["rolls"] is None:
+                    if r["reason"] in ("immune", "fail"):
+                        for rr in mv["rules"]:
+                            if rr["type"] == "fail_penalty" and rr["params"].get("hp_frac"):
+                                self.hp_change(st, i, A, -math.floor(A.maxhp * rr["params"]["hp_frac"]), "크래시")
                     if r["reason"] == "immune":
                         self._say(st, "  효과 없음")
                     elif r["reason"] == "fail":
@@ -1011,6 +1058,8 @@ class Engine:
                     if norm(A.item) == "bigroot":
                         heal = math.floor(heal * 1.3)
                     self.hp_change(st, i, A, heal, "흡수")
+            if key == "knockoff" and D.item and any(r["hook"] == "on_damage_taken_hp" for r in self.data.item_fx.get(norm(D.item), []))                     and norm(D.ability) != "stickyhold":
+                D.item = ""
             if berry_used and D.item:
                 D.item = ""
                 berry_used = False
@@ -1026,7 +1075,7 @@ class Engine:
         if mv["recoil"] and A.alive and total and norm(A.ability) not in ("rockhead", "magicguard"):
             self.hp_change(st, i, A, -max(1, math.floor(total * _frac(mv["recoil"] / 100) + 0.5)), "반동")
         if A.alive and landed:
-            self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o)
+            self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="ability")
         if not hit_sub:
             self._secondary(st, i, o, mv, rng)
             if key == "knockoff" and D.item and norm(D.ability) != "stickyhold" and not (
@@ -1055,6 +1104,13 @@ class Engine:
         pend, self._pending = self._pending, []
         for fn in pend:
             fn()
+        if A.alive and landed and st.sides[i].mon is A:           # 생명의구슬/조개껍질방울은 낙오카드 등이 끝난 뒤
+            self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="item")
+        if key in ("rapidspin", "mortalspin", "tidyup") and A.alive:
+            st.sides[i].hazards.clear()
+            A.vol.discard("leechseed")
+            A.trap = 0
+            A.vol.discard("bind"); A.vol.discard("bindband")
         if mv["self_switch"] and A.alive and st.winner is None:
             cand = [j for j in st.sides[i].alive_idx() if j != st.sides[i].active]
             if cand:
@@ -1177,6 +1233,7 @@ class Engine:
             elif code == "partiallytrapped":
                 if not tgt.trap and tgt.sub == 0:
                     tgt.trap = 7 if norm(st.sides[i].mon.item) == "gripclaw" else rng.choice([4, 5])
+                    tgt.trap_src = (i, st.sides[i].active)
                     tgt.vol.add("bindband" if norm(st.sides[i].mon.item) == "bindingband" else "bind")
             elif code not in PROTECT_MOVES:
                 self._unsup("volatile:" + code)
@@ -1235,6 +1292,17 @@ class Engine:
                 self.change_boost(st, i, A, "spe", -1)
                 self.change_boost(st, i, A, "atk", 1)
                 self.change_boost(st, i, A, "def", 1)
+            return
+        if (mv["heal"] or any(r["type"] == "heal_move" and "table" in r["params"] for r in mv["rules"]))                 and A.hp == A.maxhp and key not in ("rest",) and mv["target"] == "self":
+            return
+        if key == "destinybond" and A.prev_move == "destinybond":
+            return
+        if key == "trickroom":
+            st.trick_room = 0 if st.trick_room else 5
+            return
+        if key == "transform":
+            if D.alive and D.sub == 0 and not self._transform(st, A, D):
+                pass
             return
         if key == "memento":
             if D.sub == 0:
@@ -1299,7 +1367,7 @@ class Engine:
             return
         if mv["force_switch"]:
             cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
-            if cand and norm(D.ability) not in ("suctioncups",) and D.sub == 0:
+            if cand and norm(D.ability) not in ("suctioncups",):
                 self._switch_in(st, o, rng, to=rng.choice(cand))
             return
         for e in mv["effects"]:
@@ -1328,9 +1396,11 @@ class Engine:
                 elif e["applies_to"] == "self" and kind == "volatile":
                     if e["code"] == "focusenergy":
                         A.vol.add("focusenergy")
+                    elif e["code"] == "roost":
+                        A.vol.add("roost")
                     elif e["code"] in ("stockpile", "destinybond"):
                         self._apply_effect(st, i, i, dict(e, applies_to="self"), rng)
-                    elif e["code"] not in ("roost", "protect"):
+                    elif e["code"] not in ("protect",):
                         self._unsup("volatile:" + e["code"])
                 elif not (kind == "status" and "substitute" in D.vol):
                     self._apply_effect(st, i, o, e, rng)
@@ -1396,7 +1466,9 @@ class Engine:
 
     # ───────────────────────── 턴 종료 ─────────────────────────
     def _end_of_turn(self, st, rng):
-        order = sorted((0, 1), key=lambda i: (-self.speed_of(st, i), rng.random()))
+        order = sorted((0, 1), key=lambda i: ((1 if st.trick_room else -1) * self.speed_of(st, i), rng.random()))
+        if st.trick_room:
+            st.trick_room -= 1
         if st.weather:
             st.weather_turns -= 1
             if st.weather_turns <= 0:
@@ -1449,6 +1521,10 @@ class Engine:
                     self.try_status(st, i, bm, "slp", rng)
             if bm.alive and "curse" in bm.vol and norm(bm.ability) != "magicguard":
                 self.hp_change(st, i, bm, -max(1, bm.maxhp // 4), "저주")
+            if bm.alive and bm.trap and bm.trap_src and (
+                    st.sides[bm.trap_src[0]].active != bm.trap_src[1] or not st.sides[bm.trap_src[0]].mon.alive):
+                bm.trap = 0
+                bm.vol.discard("bind"); bm.vol.discard("bindband")
             if bm.alive and bm.trap:
                 bm.trap -= 1
                 if bm.trap <= 0:
@@ -1459,6 +1535,8 @@ class Engine:
                 self.run_hook(st, i, bm, "on_damage_taken_hp", rng)
             if bm.alive and norm(bm.item) in ("toxicorb", "flameorb") and not bm.status:
                 self.try_status(st, i, bm, "tox" if norm(bm.item) == "toxicorb" else "brn", rng, src_side=i)
+        for i in (0, 1):
+            st.sides[i].mon.vol.discard("roost")
         for i in (0, 1):
             S = st.sides[i]
             if S.wish:
