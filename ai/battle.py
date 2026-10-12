@@ -482,7 +482,7 @@ class Engine:
             n = -n
         elif ab == "simple":
             n *= 2
-        if n < 0 and from_foe and bm.sub > 0:
+        if n < 0 and from_foe and bm.sub > 0 and not getattr(self, "_bypass_sub", False):      # 소리 기술 등 bypasssub 는 대타를 무시한다
             return 0
         if n < 0 and from_foe and not broken:
             for r in self.data.ability_fx.get(ab, []):
@@ -1082,6 +1082,7 @@ class Engine:
         """기술 실행 단계 (사용 조건 확인 이후). Copycat 처럼 다른 기술을 불러 쓰는 기술도 이 함수를 다시 호출한다"""
         S = st.sides[i]
         bm = S.mon
+        self._bypass_sub = "bypasssub" in mv["flags"] or norm(bm.ability) == "infiltrator"
         bm.used.add(norm(mname))
         if norm(mv["name"]) not in STALL_MOVES:
             bm.protect_n = 0
@@ -1939,7 +1940,7 @@ class Engine:
             self.hp_change(st, i, A, -A.hp, "메멘토")
             return
         if key == "yawn":
-            if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.yawn and not D.status and not (st.terrain in ("electric", "misty") and self._grounded(D)):
+            if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.yawn and not D.status and not (st.terrain == "electric" and self._grounded(D)):      # 하품 자체는 일렉트릭필드만 막는다 (미스트필드는 잠드는 시점에 막음)
                 if not any(r["hook"] == "immunity" and (r["code"] or "").startswith("status:slp") for r in self.data.ability_fx.get(norm(D.ability), [])):
                     D.yawn = 2
             return
