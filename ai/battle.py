@@ -1387,6 +1387,10 @@ class Engine:
             self.hp_change(st, i, A, -max(1, math.floor(total * _frac(mv["recoil"] / 100) + 0.5)), "반동")
         if A.alive and landed:
             self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="ability")
+        elif landed and D.alive:                           # 공격자가 접촉 반격으로 쓰러져도 독수/악취 같은 부가효과는 이미 적용된다
+            for src_, r_ in self.rows(A, "on_hit_dealt"):
+                if src_ == "ability" and r_["kind"] in ("status", "volatile") and self._cond_ok(r_["cond"], st, i, A, mv, None):
+                    self.apply_row(st, "ability:" + r_["label"].split(":", 1)[1], r_, i, A, rng, mv, total, o)
         self._secondary(st, i, o, mv, rng, hit_sub)      # 대타는 상대에게 걸리는 부가효과만 막고, 자신에게 걸리는 효과(불꽃의charge 등)는 그대로 적용
         if deferred and D.alive and st.sides[o].mon is D:                  # 열매 등 HP 조건 효과: 부가효과(힐블록 등)가 끝난 뒤에 판단
             self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=deferred[0], dmg=deferred[1], hp_before=deferred[2], foe_side=i)
