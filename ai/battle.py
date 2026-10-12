@@ -668,17 +668,17 @@ class Engine:
                 if not bm.trap and norm(st.sides[1 - side].mon.ability) != "shadowtag":
                     acts += [("s", j) for j in S.alive_idx() if j != S.active]
                 return acts
+        if bm.locked and bm.locked in moves and norm(bm.item) in CHOICE:
+            ks = [moves.index(bm.locked)]
+        else:
+            ks = list(range(len(moves)))
         if bm.taunt:
-            ok = [k for k, m in enumerate(moves) if self.data.moves[norm(m)]["category"] != "status" and k not in first_only and norm(m) != bm.disabled]
+            ok = [k for k in ks if self.data.moves[norm(moves[k])]["category"] != "status" and k not in first_only and norm(moves[k]) != bm.disabled]
             if ok:
                 acts = [("m", k) for k in ok]
                 if not bm.trap and norm(st.sides[1 - side].mon.ability) != "shadowtag":
                     acts += [("s", j) for j in S.alive_idx() if j != S.active]
                 return acts
-        if bm.locked and bm.locked in moves and norm(bm.item) in CHOICE:
-            ks = [moves.index(bm.locked)]
-        else:
-            ks = list(range(len(moves)))
         ks = [k for k in ks if norm(moves[k]) != bm.disabled]
         acts += [("m", k) for k in ks if k not in first_only] or [("t", 0)]
         if not bm.trap and "shadowtag" != norm(st.sides[1 - side].mon.ability):
@@ -857,7 +857,10 @@ class Engine:
         if norm(mname) not in ("encore",):
             bm.last_move = norm(mname)
         if norm(mname) == "revivalblessing":
-            bm.spent.add("revivalblessing")
+            if norm(bm.item) == "leppaberry":                      # PP 1 이 0 이 되면 Leppa 열매가 PP 를 회복한다 (이후 다시 쓸 수 있음)
+                bm.item = ""
+            else:
+                bm.spent.add("revivalblessing")
         chg = next((r["params"] for r in mv["rules"] if r["type"] == "charge_move"), None)
         if chg is not None:
             if bm.charge == norm(mname):                      # 두 번째 턴: 공격
