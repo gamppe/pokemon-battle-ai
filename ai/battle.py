@@ -2072,7 +2072,8 @@ class Engine:
             if bm.alive and "curse" in bm.vol and norm(bm.ability) != "magicguard":
                 self.hp_change(st, i, bm, -max(1, bm.maxhp // 4), "저주")
             if bm.alive and bm.trap and bm.trap_src and (
-                    st.sides[bm.trap_src[0]].active != bm.trap_src[1] or not st.sides[bm.trap_src[0]].mon.alive):
+                    st.sides[bm.trap_src[0]].active != bm.trap_src[1] or not st.sides[bm.trap_src[0]].mon.alive
+                    or st.sides[bm.trap_src[0]].mon.active_turns == 0):      # 속박한 쪽이 이번 턴에 막 나왔어도(되돌아옴) 풀린다 (!source.activeTurns)
                 bm.trap = 0
                 bm.vol.discard("bind"); bm.vol.discard("bindband")
             if bm.alive and bm.trap:
