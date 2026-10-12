@@ -578,6 +578,14 @@ class Engine:
                     bm.item = ""
                     break
 
+    def _hp_berry_update(self, st, rng):
+        """행동/턴 종료 뒤의 Update: 반동·화상·독 등 간접 피해로 HP 조건이 된 열매는 바로 먹는다"""
+        for k in (0, 1):
+            m = st.sides[k].mon
+            if m.alive and m.item and norm(m.item).endswith("berry") and not self._unnerved(st, m):
+                if any(r["hook"] == "on_damage_taken_hp" for r in self.data.item_fx.get(norm(m.item), [])):
+                    self.run_hook(st, k, m, "on_damage_taken_hp", rng, only="item")
+
     def _update_berries(self, st, rng):
         """긴장감 등으로 먹지 못했던 열매는 조건이 남아 있으면 방해가 사라진 뒤 바로 먹는다 (Showdown 의 onUpdate)"""
         for k in (0, 1):
@@ -895,6 +903,7 @@ class Engine:
             st.sides[i].mon.active_turns += 1
         self._check_winner(st)
         self._update_berries(st, rng)
+        self._hp_berry_update(st, rng)
         self._forecast_sync(st)
         return st
 
@@ -1062,6 +1071,7 @@ class Engine:
             bm.charged = 0
         st.lastmove_any = norm(mname)                       # Copycat 용: 전투 전체에서 마지막으로 쓰인 기술
         self._update_berries(st, rng)
+        self._hp_berry_update(st, rng)
         self._forecast_sync(st)
         for S_ in st.sides:                                 # 구애 아이템을 잃으면(트릭 등) 기술 고정도 풀린다 (choicelock 볼라타일은 아이템이 바뀌면 사라짐)
             if S_.mon.locked and norm(S_.mon.item) not in CHOICE:
@@ -1437,10 +1447,12 @@ class Engine:
                 A.ate_berry = True
                 A.last_item = berry
                 A.item = own
-            if key == "fling" and A.item and D.alive and not hit_sub:                       # 던지기: 도구를 상대에게 던져 효과를 주고 도구는 사라진다
+            if key == "fling" and A.item:                       # 던지기: 도구를 상대에게 던져 효과를 주고 도구는 사라진다 (상대가 쓰러지거나 대타여도 도구는 잃는다)
                 thrown = norm(A.item)
                 A.item = ""
-                if thrown.endswith("berry"):
+                if not D.alive or hit_sub:
+                    pass
+                elif thrown.endswith("berry"):
                     own_, last_ = D.item, D.last_item
                     D.item = thrown
                     for hook_ in ("on_damage_taken_hp", "on_status"):
@@ -1710,6 +1722,8 @@ class Engine:
     def _self_destruct_fail(self, st, i, mv):
         """자폭 기술(Explosion 등)은 막히거나 빗나가거나 면역이어도 쓰는 순간 쓰러진다 (Showdown selfdestruct: 'always')"""
         A = st.sides[i].mon
+        if norm(mv["name"]) == "fling" and A.item:                       # 던지기는 막히거나 빗나가도 도구를 쓴 뒤 잃는다 (onPrepareHit)
+            A.item = ""
         if mv["self_destruct"] and mv["category"] != "status" and A.alive and norm(mv["name"]) != "finalgambit":      # 아슬아슬한승부는 맞았을 때만 (selfdestruct: ifHit)
             self.hp_change(st, i, A, -A.hp, "자폭")
 
@@ -2140,6 +2154,7 @@ class Engine:
                 self.hp_change(st, i, bm, max(1, bm.maxhp // 16) if "Poison" in bm.types else -max(1, bm.maxhp // 8), "검은진흙")
             if bm.alive and "leechseed" in bm.vol and norm(bm.ability) != "magicguard" and st.sides[1 - i].mon.alive:    # 씨를 뿌린 쪽이 쓰러졌으면 피해 없음
                 d = max(1, bm.maxhp // 8)
+                d = min(d, bm.hp)                                  # 실제로 깎인 만큼만 회복한다 (damage 반환값)
                 self.hp_change(st, i, bm, -d, "씨뿌리기")
                 src = st.sides[1 - i].mon
                 if src.alive:
@@ -2190,8 +2205,6 @@ class Engine:
                     bm.vol.discard("bind"); bm.vol.discard("bindband")
                 elif norm(bm.ability) != "magicguard":
                     self.hp_change(st, i, bm, -max(1, math.floor(bm.maxhp * (1 / 6 if "bindband" in bm.vol else 1 / 8))), "속박")
-            if bm.alive:
-                self.run_hook(st, i, bm, "on_damage_taken_hp", rng)
             if bm.alive and norm(bm.item) in ("toxicorb", "flameorb") and not bm.status:
                 self.try_status(st, i, bm, "tox" if norm(bm.item) == "toxicorb" else "brn", rng, src_side=i)
             if bm.alive and bm.perish:                           # 멸망의노래: 카운트가 0 이 되면 쓰러진다
@@ -2219,6 +2232,7 @@ class Engine:
             st.magic_room -= 1
             if not st.magic_room:
                 self._magic_end(st)
+        self._hp_berry_update(st, rng)
 
     # ───────────────────────── 편의 ─────────────────────────
     def clone(self, st):
