@@ -141,7 +141,12 @@ def learnset(sid):
     return []
 
 
-past = set(json.loads(rd("champ_past_moves.json")))
+# 챔피언스에서 사용 불가(isNonstandard: "Past")인 기술. load_move_effects.py 보다 먼저 돌므로 여기서 직접 계산한다
+past = set()
+for m in re.finditer(r"^\t(\w+): \{\n(.*?)^\t\},", rd("cache_sd_champ_moves.ts"), re.S | re.M):
+    mid = mv.get(norm(m.group(1)))
+    if mid is not None and re.search(r'isNonstandard: "Past"', m.group(2)):
+        past.add(mid)
 pm, miss_mv, nols = set(), set(), []
 for sid, pid in pid_of.items():
     L = learnset(sid)

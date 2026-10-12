@@ -35,7 +35,7 @@ for (const m of dex.moves.all()) {
       volatileStatus: m.secondary.volatileStatus || null, boosts: m.secondary.boosts || null,
       self: m.secondary.self ? (m.secondary.self.boosts || true) : null} : null,
     secondaries: m.secondaries ? m.secondaries.map(s => ({chance: s.chance, status: s.status || null, volatileStatus: s.volatileStatus || null, boosts: s.boosts || null})) : null,
-    boosts: m.boosts || null, selfBoosts: m.self && m.self.boosts ? m.self.boosts : null,
+    boosts: m.boosts || null, selfBoosts: (m.self && m.self.boosts) || (m.selfBoost && m.selfBoost.boosts) || null,   // 최신 Showdown 은 selfBoost 키로 옮겨 감
     status: m.status || null, volatileStatus: m.volatileStatus || null,
     hasSecondary: !!((m.secondaries && m.secondaries.length) || m.secondary),
     selfVolatile: m.self && m.self.volatileStatus ? m.self.volatileStatus : null,
