@@ -205,7 +205,7 @@ class Engine:
 
     def field_for(self, st, defender_side):
         scr = tuple(k for k in SCREENS if st.sides[defender_side].screens.get(k, 0) > 0)
-        return Field(st.weather, st.terrain, scr)
+        return Field(self.wx(st), st.terrain, scr)
 
     def rolls(self, st, ai_, di_, move_key, crit, hit=1):
         A, D = st.sides[ai_].mon, st.sides[di_].mon
@@ -266,7 +266,7 @@ class Engine:
     def speed_of(self, st, i):
         bm = st.sides[i].mon
         m = make_mon(self.data, self.spec_of(bm))
-        c = Ctx(self.data, m, m, {}, Field(st.weather, st.terrain), False)
+        c = Ctx(self.data, m, m, {}, Field(self.wx(st), st.terrain), False)
         s = calc_speed(c, m)
         if st.sides[i].screens.get("tailwind", 0) > 0:
             s *= 2
@@ -312,7 +312,7 @@ class Engine:
                 if not mv or mv["category"] not in str(v).split("|"):
                     return False
             elif k == "weather":
-                if st.weather != v:
+                if self.wx(st) != v:
                     return False
             elif k == "terrain":
                 if st.terrain != v:
@@ -386,7 +386,8 @@ class Engine:
             if tm.alive and dmg:
                 self.hp_change(st, tside, tm, max(1, math.floor(dmg * _frac(val))), src)
         elif kind == "set_weather":
-            self._set_weather(st, code, bm)
+            if st.weather != code:                          # 이미 같은 날씨면 지속 시간이 갱신되지 않는다
+                self._set_weather(st, code, bm)
         elif kind == "set_terrain":
             st.terrain = code
             st.terrain_turns = 8 if any(r["code"] == "extend_terrain" for r in self.data.item_fx.get(norm(bm.item), [])) else 5
@@ -523,7 +524,7 @@ class Engine:
                 return False
         elif STATUS_IMMUNE_TYPE.get(code) in bm.types:
             return False
-        if code == "frz" and st.weather == "sun":
+        if code == "frz" and self.wx(st) == "sun":
             return False
         if code == "slp" and st.terrain == "electric" and self._grounded(bm):
             return False
@@ -646,6 +647,7 @@ class Engine:
             if not bm.alive:
                 return
             self._run_switch_in(st, side, bm, rng)
+            self._forecast_sync(st)
         if defer:                                           # 동시에 교체되면 등장 효과는 모두 나온 뒤 현재 속도 순으로 처리된다
             return effects
         effects()
@@ -699,6 +701,19 @@ class Engine:
     @staticmethod
     def _item_is(bm, name):
         return norm(bm.item) == name
+
+    def wx(self, st):
+        """실효 날씨: 날씨가 풀리는 특성(구름의 무게 등)이 필드에 있으면 날씨 효과가 없다"""
+        if st.weather and any(norm(S.mon.ability) in ("cloudnine", "airlock") and S.mon.alive for S in st.sides):
+            return None
+        return st.weather
+
+    def _forecast_sync(self, st):
+        """캐스퐁(Forecast): 현재 날씨에 맞춰 타입이 바뀐다"""
+        for S in st.sides:
+            m = S.mon
+            if m.alive and norm(m.ability) == "forecast" and m.sid.startswith("castform"):
+                m.types = [{"sun": "Fire", "rain": "Water", "snow": "Ice"}.get(self.wx(st), "Normal")]
 
     def _set_weather(self, st, w, bm):
         st.weather = w
@@ -841,6 +856,7 @@ class Engine:
         for i in (0, 1):
             st.sides[i].mon.active_turns += 1
         self._check_winner(st)
+        self._forecast_sync(st)
         return st
 
     def _replace(self, st, i, rng, switch_policy, defer=False):
@@ -991,7 +1007,7 @@ class Engine:
             if bm.charge == norm(mname):                      # 두 번째 턴: 공격
                 bm.charge, bm.semi = None, None
             elif str(chg.get("skip_if", "")) == "weather:" + str(
-                    "sun" if any(r["code"] == "treat_weather_as:sun" for r in self.data.ability_fx.get(norm(bm.ability), [])) else st.weather):
+                    "sun" if any(r["code"] == "treat_weather_as:sun" for r in self.data.ability_fx.get(norm(bm.ability), [])) else self.wx(st)):
                 for k, v in (chg.get("charge_boost") or {}).items():       # 날씨 조건으로 즉시 발동(능력 상승은 그대로)
                     self.change_boost(st, i, bm, k, int(v))
             else:                                             # 첫 턴: 충전
@@ -1006,6 +1022,7 @@ class Engine:
         if mv["type"] == "Electric" and bm.charged:                 # 전기 기술을 쓰고 나면 충전 해제 (onAfterMove)
             bm.charged = 0
         st.lastmove_any = norm(mname)                       # Copycat 용: 전투 전체에서 마지막으로 쓰인 기술
+        self._forecast_sync(st)
         for S_ in st.sides:                                 # 구애 아이템을 잃으면(트릭 등) 기술 고정도 풀린다 (choicelock 볼라타일은 아이템이 바뀌면 사라짐)
             if S_.mon.locked and norm(S_.mon.item) not in CHOICE:
                 S_.mon.locked = None
@@ -1161,7 +1178,7 @@ class Engine:
                 return False
             if req == "user_asleep" and bm.status != "slp":
                 return False
-            if req == "weather:snow" and st.weather != "snow":
+            if req == "weather:snow" and self.wx(st) != "snow":
                 return False
             if req == "terrain_active" and not st.terrain:
                 return False
@@ -1213,13 +1230,13 @@ class Engine:
             a = a * 1.1
         if norm(D.item) == "brightpowder":
             a = a * 0.9
-        if (st.weather == "sand" and dab == "sandveil") or (st.weather == "snow" and dab == "snowcloak"):
+        if (self.wx(st) == "sand" and dab == "sandveil") or (self.wx(st) == "snow" and dab == "snowcloak"):
             a = a * 0.8
         if aab == "hustle" and mv["category"] == "physical":
             a = a * 0.8
-        if mv["name"].lower() in ("thunder", "hurricane") and st.weather == "rain":
+        if mv["name"].lower() in ("thunder", "hurricane") and self.wx(st) == "rain":
             return True
-        if mv["name"].lower() == "blizzard" and st.weather == "snow":
+        if mv["name"].lower() == "blizzard" and self.wx(st) == "snow":
             return True
         stage = max(-6, min(6, A.boosts.get("accuracy", 0) - (0 if dab == "unaware" else D.boosts.get("evasion", 0))))
         ratio = (3 + stage) / 3 if stage >= 0 else 3 / (3 - stage)
@@ -1932,7 +1949,7 @@ class Engine:
         table = next((r["params"]["table"] for r in mv["rules"] if r["type"] == "heal_move" and "table" in r["params"]), None)
         if (mv["heal"] or table) and A.alive:
             if table:       # 날씨에 따라 비율이 바뀌는 회복(아침햇살 등): Showdown 의 modify -- 4096 기준 고정소수점, 0.5 는 내림
-                w_ = "sun" if any(r["code"] == "treat_weather_as:sun" for r in self.data.ability_fx.get(norm(A.ability), [])) else st.weather
+                w_ = "sun" if any(r["code"] == "treat_weather_as:sun" for r in self.data.ability_fx.get(norm(A.ability), [])) else self.wx(st)
                 frac = table.get(w_ or "default", table["default"])
                 if abs(frac - 0.667) < 1e-3:
                     frac = 0.667
@@ -2000,9 +2017,10 @@ class Engine:
             st.weather_turns -= 1
             if st.weather_turns <= 0:
                 st.weather = None
+                self._forecast_sync(st)
         for i in order:
             bm = st.sides[i].mon
-            if bm.alive and st.weather == "sand" and not any(t in ("Rock", "Ground", "Steel") for t in bm.types) and \
+            if bm.alive and self.wx(st) == "sand" and not any(t in ("Rock", "Ground", "Steel") for t in bm.types) and \
                     norm(bm.ability) not in ("magicguard", "overcoat", "sandveil", "sandrush", "sandforce") and norm(bm.item) != "safetygoggles":
                 self.hp_change(st, i, bm, -max(1, bm.maxhp // 16), "모래바람")
             fut = st.sides[i].future
