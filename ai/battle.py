@@ -61,6 +61,7 @@ class BMon:
     frz_n: int = 0                     # 챔피언스 얼음: 행동 시도 3번이 지나면 반드시 풀림
     busted: bool = False               # 변장이 깨진 상태 (교체해도 유지된다)
     perish: int = 0                    # 멸망의노래 카운트 (4 에서 시작해 턴 끝마다 1 감소, 0 이 되면 쓰러짐)
+    db_pending: bool = False           # Destiny Bond 가 걸려 있음 (다른 기술을 쓰려 하거나 기술이 중단되면 해제, 그 전에 또 쓰면 실패)
     disabled: str = ""                 # 봉인된 기술 / 남은 턴
     disable_n: int = 0
     active_turns: int = 0
@@ -568,11 +569,14 @@ class Engine:
                 old.tox = 1
             if old.sid == "aegislashblade":
                 old.sid = "aegislash"
+            if old.sid in self.data.pokemon:                       # 프로틴/리베로 등으로 바뀐 타입은 교체하면 원래대로 돌아온다
+                old.types = list(self.data.pokemon[old.sid]["types"])
             S.active = to
         bm = S.mon
         bm.active_turns, bm.moves_made, bm.moved, bm.used = 0, 0, False, set()
         bm.taunt = bm.stockpile = bm.yawn = bm.encore = bm.healblock = bm.rampage = bm.throat = bm.met_n = bm.disable_n = 0
         bm.met_last = bm.disabled = ""
+        bm.db_pending = False
         bm.last_move = ""
         if passed:
             bm.boosts, bm.sub, bm.vol = passed[0], passed[1], set(passed[2])
@@ -844,6 +848,8 @@ class Engine:
         bm.moves_made += 1
         bm.vol.discard("glaiverush")
         bm.vol.discard("destinybond")
+        if norm(mname) != "destinybond":
+            bm.db_pending = False
         bm.prev_failed, bm.last_failed = bm.last_failed, True            # 성공 지점에서 False 로 바꾼다 (자폭/심술/고집 등 '직전 기술 실패' 조건용)
         # 스탠스체인지: 공격하면 블레이드폼, 킹실드는 실드폼
         if norm(bm.ability) == "stancechange" and bm.sid in ("aegislash", "aegislashblade") and not bm.orig:
@@ -852,6 +858,7 @@ class Engine:
             elif mv["category"] != "status":
                 bm.sid = "aegislashblade"
         if not self._can_act(st, i, bm, rng):
+            bm.db_pending = False                           # 기술이 중단되면 Destiny Bond 도 풀린다 (onMoveAborted)
             if norm(bm.item) not in CHOICE:
                 bm.locked = None
             bm.charge, bm.semi = None, None
@@ -1573,8 +1580,12 @@ class Engine:
         if (mv["heal"] or any(r["type"] == "heal_move" and "table" in r["params"] for r in mv["rules"]))                 and A.hp == A.maxhp and key not in ("rest",) and mv["target"] == "self":
             self._sfail = True
             return
-        if key == "destinybond" and A.prev_move == "destinybond":
-            return
+        if key == "destinybond":
+            if A.db_pending:                                # 연속으로 쓰면 실패하고 (onPrepareHit 가 상태를 지운다) 다음 시도는 성공한다
+                A.db_pending = False
+                self._sfail = True
+                return
+            A.db_pending = True
         if key == "revivalblessing":
             dead = [m for m in st.sides[i].team if not m.alive]
             if dead:
