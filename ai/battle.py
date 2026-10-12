@@ -1024,6 +1024,9 @@ class Engine:
                 return False
             if req.startswith("user_has_type:") and req.split(":")[1] not in bm.types:
                 return False
+            if req in ("target_will_use_priority_attacking_move", "target_will_use_attacking_move") and \
+                    st.sides[1 - i].active != self._starts[1 - i]:
+                return False                      # 이번 턴 도중에 교체해 들어온 포켓몬은 행동이 없다 (Sucker Punch 실패)
             if req == "target_will_use_priority_attacking_move":
                 o = 1 - i
                 a = acts[o]
@@ -1116,7 +1119,8 @@ class Engine:
                 dmg, crit = mv["fixed_damage"] or 50, False
             elif mv["ohko"]:
                 imm = self.rolls(st, i, o, key, False)
-                if imm["reason"] == "immune":
+                if imm["reason"] == "immune" or self._chart_immune(mv, D):
+                    self._say(st, "  효과 없음")
                     return
                 dmg, crit = D.hp, False
             elif key in ("counter", "mirrorcoat", "metalburst", "comeuppance"):
