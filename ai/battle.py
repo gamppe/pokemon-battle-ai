@@ -127,6 +127,7 @@ class State:
     terrain_turns: int = 0
     trick_room: int = 0
     magic_room: int = 0
+    lastmove_any: str = ""             # 전투 전체에서 마지막으로 쓰인 기술 (Copycat)
     turn: int = 0
     winner: int | None = None        # 0 / 1 / -1(무승부)
     last_hit: list = field(default_factory=lambda: [0, 0])
@@ -144,6 +145,7 @@ class Engine:
             target="randomNormal", effects=[]))
         self._landed = False
         self._pending = []
+        self._sfail = False
         self._later, self._starts = [], [None, None]      # 이번 턴에 아직 행동할 쪽 (보호 계열의 '마지막이면 실패' 판정용)
         self._rng = random.Random(0)
         self._policy = None
@@ -570,7 +572,7 @@ class Engine:
         if passed:
             bm.boosts, bm.sub, bm.vol = passed[0], passed[1], set(passed[2])
         self._say(st, f"[{side}] {bm.name} 등장")
-        if S.heal_next:
+        if S.heal_next and (bm.hp < bm.maxhp or bm.status):          # 체력이 가득하고 상태이상도 없으면 효과를 남겨 두었다가 다음 교체 대상에게 쓴다
             bm.hp, bm.status = bm.maxhp, None
             S.heal_next = None
         if not self._item_is(bm, "heavydutyboots"):
@@ -699,7 +701,7 @@ class Engine:
         """한 턴 진행. acts = [행동0, 행동1], 행동 = ('m', 기술번호) | ('s', 교체번호) | ('r', 0)"""
         if st.winner is not None:
             return st
-        self._rng, self._policy = rng, switch_policy
+        self._rng, self._policy, self._acts = rng, switch_policy, acts
         st.turn += 1
         st.last_hit = [0, 0]
         st.last_cat = ["", ""]
@@ -887,6 +889,13 @@ class Engine:
                     bm.semi = [norm(x) for x in chg.get("hit_by_moves", [])]
                 self._say(st, "  충전")
                 return
+        self._run_move(st, i, mv, mname, acts, rng, switch_policy)
+        st.lastmove_any = norm(mname)                       # Copycat 용: 전투 전체에서 마지막으로 쓰인 기술
+
+    def _run_move(self, st, i, mv, mname, acts, rng, switch_policy):
+        """기술 실행 단계 (사용 조건 확인 이후). Copycat 처럼 다른 기술을 불러 쓰는 기술도 이 함수를 다시 호출한다"""
+        S = st.sides[i]
+        bm = S.mon
         bm.used.add(norm(mname))
         if norm(mv["name"]) not in STALL_MOVES:
             bm.protect_n = 0
@@ -902,6 +911,7 @@ class Engine:
         foe_target = not target_is_self
         if foe_target and not D.alive:
             self._say(st, "  대상 없음")
+            self._self_destruct_fail(st, i, mv)
             return
         if foe_target and D.semi is not None and norm(bm.ability) != "noguard" and norm(D.ability) != "noguard" and norm(mv["name"]) not in D.semi:
             self._say(st, "  빗나감(반무적 상태)")
@@ -934,7 +944,7 @@ class Engine:
                     self._say(st, f"  {k} 파괴")
         if mv["category"] == "status" and mv["bp"] == 0:
             self._status_move(st, i, mv, rng)
-            bm.last_failed = False
+            bm.last_failed = self._sfail
             return
         if norm(mv["name"]) not in MULTI_ACCURACY and not self._hits(st, i, o, mv, rng, target_is_self):
             self._say(st, "  빗나감")
@@ -1230,6 +1240,8 @@ class Engine:
         for r in mv["rules"]:
             if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and A.alive and total:
                 self.hp_change(st, i, A, -math.floor(A.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
+            elif r["params"].get("effect") == "clear_terrain" and landed and st.terrain:       # 스틸롤러/아이스스피너: 맞히면 필드를 없앤다 (대타 포함)
+                st.terrain, st.terrain_turns = None, 0
             elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard":      # 대타를 때려도 깐다 (onAfterSubDamage)
                 self._side_condition(st, o, {"stealth_rock": "stealthrock"}.get(r["params"]["hazard"], r["params"]["hazard"]), swap=True)
         if mv["force_switch"] and not mv["self_switch"] and D.alive and not hit_sub and D.sub == 0 and norm(D.ability) != "suctioncups":
@@ -1412,10 +1424,20 @@ class Engine:
         A, D = st.sides[i].mon, st.sides[1 - i].mon
         o = 1 - i
         key = norm(mv["name"])
+        self._sfail = False                         # 실패하면 True -> 직전 기술 실패 조건(Temper Flare 등)과 Stomping Tantrum 에 쓴다
+        if key == "copycat":                        # 전투 전체에서 직전에 쓰인 기술을 그대로 쓴다 (불러 쓸 수 없는 기술이면 실패)
+            lm = st.lastmove_any
+            if lm and lm in self.data.moves and "failcopycat" not in self.data.moves[lm]["flags"] and lm != "copycat":
+                self._say(st, f"  따라하기 -> {self.data.moves[lm]['name']}")
+                self._run_move(st, i, self.data.moves[lm], lm, self._acts, rng, self._policy)
+            else:
+                self._sfail = True
+            return
         if key in ("endure", "quickguard", "wideguard") or key in PROTECT_MOVES:
             if not self._will_act(st, i):            # 이번 턴에 뒤에 행동할 상대가 없으면 실패. stall 이 갱신되지 않으므로 다음 턴엔 카운터가 사라진다
                 self._say(st, "  실패 (마지막 행동)")
                 A.protect_n = 0
+                self._sfail = True
                 return
         if key in ("quickguard", "wideguard"):
             A.vol.add(key)
@@ -1427,6 +1449,7 @@ class Engine:
                 A.protect_n += 1
             else:
                 A.protect_n = 0
+                self._sfail = True
             return
         if key in PROTECT_MOVES or any(e["kind"] == "volatile" and e["code"] in PROTECT_MOVES for e in mv["effects"]):
             if rng.random() < 1 / (3 ** min(A.protect_n, 5)):
@@ -1437,6 +1460,7 @@ class Engine:
                 A.protect_n += 1
             else:
                 A.protect_n = 0
+                self._sfail = True
             return
         tself = mv["target"] in NON_FOE_TARGETS
         if "reflectable" in mv["flags"] and D.alive and norm(D.ability) == "magicbounce" and not bounced and mv["target"] in ("normal", "foeSide"):
@@ -1480,6 +1504,7 @@ class Engine:
                 self.change_boost(st, i, A, "def", 1)
             return
         if (mv["heal"] or any(r["type"] == "heal_move" and "table" in r["params"] for r in mv["rules"]))                 and A.hp == A.maxhp and key not in ("rest",) and mv["target"] == "self":
+            self._sfail = True
             return
         if key == "destinybond" and A.prev_move == "destinybond":
             return
@@ -1544,12 +1569,16 @@ class Engine:
             if D.alive and not D.disabled and D.last_move and D.last_move != "struggle":
                 D.disabled, D.disable_n = D.last_move, (5 if D.moved else 4)
                 self._mental_herb(D)
+            else:
+                self._sfail = True
             return
         if key == "encore":
             if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.encore and D.last_move and D.last_move not in ("encore",) and \
                     D.last_move not in D.spent and "failencore" not in self.data.moves[D.last_move]["flags"]:        # PP 가 0 인 기술(되살리기)에는 실패
                 D.encore = 3
                 self._mental_herb(D)
+            else:
+                self._sfail = True
             return
         if key == "haze":
             A.boosts, D.boosts = {}, {}
@@ -1564,6 +1593,9 @@ class Engine:
                 return bool(m.item) and any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(m.item), [])) and "mega" in m.sid
             if norm(D.ability) != "stickyhold" and (A.item or D.item) and not locked(A) and not locked(D) and D.sub == 0:
                 A.item, D.item = D.item, A.item
+                for sd_, m_ in ((i, A), (o, D)):                 # 받은 열매는 조건이 되면 바로 먹는다 (HP 절반 이하의 시트러스 등)
+                    if m_.alive and m_.item:
+                        self.run_hook(st, sd_, m_, "on_damage_taken_hp", rng, only="item")
             return
         if key == "painsplit":
             if (D.sub == 0 or "bypasssub" in mv["flags"]):
