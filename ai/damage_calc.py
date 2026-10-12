@@ -511,6 +511,7 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
     # 장판(테라인)/오라 등 필드 규칙 + 공격 측 특성/도구 (Technician처럼 위력 상한 조건이 있는 행을 먼저)
     own = [r for r in fx_rows(c, A, "modify_bp") if r["cond"].get("target_side") != "ally"]
     aura = [r for r in fx_rows(c, D, "modify_bp") if r["cond"].get("target_side") == "all"]
+    aura = [r for r in aura if not any(o["label"] == r["label"] for o in own)]      # 같은 오라는 기술당 한 번만 적용 (Showdown auraBooster)
     foe_bp = fx_rows(c, D, "modify_bp_foe")
     tfx = [r for st in ([F.terrain + "_terrain"] if F.terrain else []) for r in data.state_fx.get(st, []) if r["hook"] == "modify_bp"]
     first = [r for r in own if "bp_max" in r["cond"]]
