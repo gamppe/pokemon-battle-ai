@@ -41,18 +41,19 @@ STRUGGLE = M("Struggle", "forced_move",
 RULES4 = [STRUGGLE]
 RULES4 += [M(mv, "sets_state", EXTRA.get(mv), state=code, phase_no=10) for mv, code in SETS_STATE.items()]
 
-# 던지기(Fling): 지닌 도구에 따라 위력/추가 효과 (챔피언스 사용 가능 도구만)
+# 던지기(Fling): 지닌 도구에 따라 위력/추가 효과 (챔피언스 사용 가능 도구만).
+# 열매(10), 메가스톤(80) 등은 Showdown 이 코드로 기본값을 채우므로, 해석이 끝난 Showdown 덤프(verify/out/sd_champions.json)에서 읽는다.
 try:
-    items = json.load(open(os.path.join(HERE, "cache_sd_items.json"), encoding="utf-8"))
-    champ = set(json.load(open(os.path.join(HERE, "champ_items_effective.json"), encoding="utf-8")))
+    dump = json.load(open(os.path.join(HERE, "..", "verify", "out", "sd_champions.json"), encoding="utf-8"))
+    champ_items = {k: v for k, v in dump["items"].items() if not v["isNonstandard"]}
     table, extra = {}, {}
-    for k in champ:
-        f = items.get(k, {}).get("fling")
+    for k, v in champ_items.items():
+        f = v.get("fling")
         if f:
-            table[items[k]["name"]] = f.get("basePower")
+            table[v["name"]] = f.get("basePower")
             e = {x: f[x] for x in ("status", "volatileStatus") if x in f}
             if e:
-                extra[items[k]["name"]] = e
+                extra[v["name"]] = e
     RULES4.append(M("Fling", "power_formula", "던진 도구의 Fling 위력으로 공격하고 그 도구는 소모됨. 도구가 없거나 던질 수 없으면 실패",
                     formula="item_fling_power", table=table, effects_by_item=extra, consumes_item=True,
                     fails_if="no_item|item_unthrowable|klutz|embargo|magic_room", phase_no=6))

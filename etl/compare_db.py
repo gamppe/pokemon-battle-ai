@@ -15,6 +15,12 @@ for t in sorted(ta & tb):
     ca, cb = cols(a, t), cols(b, t)
     if set(ca) != set(cb):
         print(f"[컬럼 다름] {t}: {sorted(set(ca) ^ set(cb))}"); bad += 1; continue
+    if t.startswith("meta_"):               # 행이 매우 많아 개수만 비교
+        na = a.cursor(); na.execute(f"select count(*) from `{t}`"); nb = b.cursor(); nb.execute(f"select count(*) from `{t}`")
+        x, y = na.fetchone()[0], nb.fetchone()[0]
+        print(f"[{'OK' if x == y else '차이'}] {t}: {x}행 (개수만 비교)")
+        bad += x != y
+        continue
     use = [c for c in ca if c not in SURR]
     q = f"select {','.join('`'+c+'`' for c in use)} from `{t}`"
     ra, rb = [], []

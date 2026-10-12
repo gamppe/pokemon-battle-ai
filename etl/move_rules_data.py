@@ -120,3 +120,12 @@ RULES += RULES3
 
 from move_rules_data_4 import RULES4  # noqa: E402
 RULES += RULES4
+
+
+# 위력 배율이 적용되는 시점 (Showdown: basePowerCallback / onModifyMove / onBasePower)
+STAGE_OF = {"Acrobatics": "callback", "Assurance": "callback", "Avalanche": "callback", "Hex": "callback", "Infernal Parade": "callback",
+            "Payback": "callback", "Rising Voltage": "callback", "Stomping Tantrum": "callback", "Temper Flare": "callback",
+            "Round": "callback", "Weather Ball": "move", "Terrain Pulse": "move"}
+for _r in RULES:
+    if _r["rule_type"] == "power_mult_if":
+        _r["params"].setdefault("stage", STAGE_OF.get(_r["move"], "chain"))

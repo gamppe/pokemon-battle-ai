@@ -19,6 +19,7 @@ scripts — dex/moves/abilities/items plus machine-readable battle rules, cross-
 | 챔피언스 기준 | Reg M-C 허용 목록(약 350종), 티어, 메가진화, 레벨 50·SP 66점 규칙, 싱글 6 중 3 선출 |
 | 기술 수치화 | 대상/급소/연속/흡수/반동, 플래그, 부가효과, 챔피언스 전용 변경, 위력 공식·사용 조건·충전·방어/분신 상호작용 |
 | 특성·아이템 수치화 | 특성 215개, 아이템 166개를 hook/조건/배율의 규칙 행으로 정리 |
+| 이름/몸무게 | 한글·영문·**일본어** 이름(`name_ja`, 폼은 `form_name_ja`), 포켓몬 몸무게(`weight_kg`) |
 | 배틀 규칙 | 날씨·필드·방·진영·상태이상(`battle_state`), 처리 순서(`battle_phase`), 전역 상호작용(`battle_rule`) |
 
 ## 요구 사항
@@ -47,6 +48,12 @@ node verify/sd_dump.js showdown verify/out/sd_champions.json      # Showdown(챔
 python -I -X utf8 verify/verify_static.py --db pokemon              # DB vs Showdown 정적 데이터 비교
 python -X utf8 etl/compare_db.py pokemon_check                      # 두 DB를 행 단위 비교 (재현성 확인)
 ```
+```bash
+python -X utf8 verify/verify_damage.py --n 8000 --seed 1   # DB 데미지 계산기(ai/damage_calc.py) vs Showdown 데미지 비교
+```
+`verify_damage.py`는 무작위 시나리오(포켓몬·특성·도구·SP·날씨·필드·벽·상태·급소)를 만들어 양쪽의 16단계 난수 데미지를 비교하고,
+불일치가 많은 규칙을 단계별로(위력/타입/최종 보정) 분류해 보여 줍니다.
+
 `verify_static.py`는 허용 포켓몬, 종족값, 타입, 특성, 습득 기술, 기술 수치/플래그/부가효과, 아이템·특성 목록,
 상성표, 성격을 비교합니다. 비교 도구의 한계로 생기는 오탐은 코드에 사유와 함께 명시했습니다.
 
@@ -56,7 +63,8 @@ schema.sql            전체 테이블 정의
 etl/                  원본 다운로드 · 적재 · 규칙 데이터(수작업) · build_all.py
   ability_effects_data.py  item_effects_data.py  move_rules_data*.py  battle_state_data*.py   ← 직접 정리한 규칙
 verify/               Showdown 대조 검증 (sd_dump.js, verify_static.py)
-ai/                   (예정) 배틀 AI: 데미지 계산기, 에이전트, 파티 구성/선출
+ai/                   데미지 계산기(damage_calc.py), DB 로더(gamedata.py) / (예정) 에이전트, 파티 구성/선출
+docs/                 AI 설계 노트(요구 사항, 구조, 메타 수집원 조사)
 ```
 
 ## 한계 (솔직하게)

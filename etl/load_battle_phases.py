@@ -34,7 +34,7 @@ PHASES = [
 HOOK_PHASE = {
     "passive": 0, "modify_priority": 1, "modify_spe": 1, "before_move": 2, "on_flinch": 2,
     "modify_move_type": 3, "immunity": 4, "modify_acc": 5, "modify_evasion": 5,
-    "modify_bp": 6, "modify_crit": 6, "modify_atk": 7, "modify_def": 7,
+    "modify_bp": 6, "modify_crit": 6, "modify_atk": 7, "modify_atk_foe": 7, "modify_def": 7, "modify_bp_foe": 6,
     "modify_stab": 8, "modify_dmg_dealt": 8, "modify_dmg_taken": 8,
     "modify_drain": 10, "on_hit_dealt": 10, "on_stat_drop": 10, "on_status": 10, "on_foe_stat_rise": 10,
     "on_hit_taken": 11, "on_crit_taken": 11,

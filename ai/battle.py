@@ -1,0 +1,1483 @@
+"""싱글 배틀 턴 엔진 (v1). 데미지는 damage_calc(Showdown과 검증됨)를 그대로 쓴다.
+특성/도구의 발동 효과(피격, 등장, 턴 종료, 상태이상 등)는 DB(ability_effect / item_effect)의 hook 행을 읽어서 적용한다.
+구현 범위: 우선도/속도 순서, 명중/급소/난수/다단히트, 반동/흡수/회복, 상태이상, 풀죽음, 능력 단계, 날씨/필드, 벽/해저드/순풍,
+방어류, 되돌아가기, 교체, 기절 후 교체, 잔여 데미지/회복, 구애류 고정, 변하는 특성 일부(변환자재/스탠스체인지/탈).
+미구현(효과 없음으로 처리하고 eng.unsupported 에 센다): 대타출동, 혼란의 세부, 변신/복사, 특성 변경 기술 등.
+정확도는 verify/verify_turns.py (Showdown과 분포 대조)로 검증한다."""
+import copy
+import math
+import random
+from dataclasses import dataclass, field
+
+from .damage_calc import Field, Ctx, make_mon, speed as calc_speed, calc
+from .gamedata import norm
+
+SCREENS = ("reflect", "light_screen", "aurora_veil")
+PROTECT_MOVES = {"protect", "detect", "banefulbunker", "spikyshield", "kingsshield", "burningbulwark", "silktrap", "obstruct"}
+CHOICE = {"choiceband", "choicespecs", "choicescarf"}
+WEATHER_ROCK = {"sun": "heatrock", "rain": "damprock", "sand": "smoothrock", "snow": "icyrock"}
+CONTACT_PUNISH = {"spikyshield": ("dmg", 1 / 8), "banefulbunker": ("status", "psn"), "burningbulwark": ("status", "brn"),
+                  "kingsshield": ("boost", ("atk", -1)), "silktrap": ("boost", ("spe", -1)), "obstruct": ("boost", ("def", -2))}
+STATUS_IMMUNE_TYPE = {"par": "Electric", "brn": "Fire", "frz": "Ice"}
+NON_FOE_TARGETS = {"self", "allySide", "foeSide", "all", "allyTeam", "allies", "adjacentAlly", "adjacentAllyOrSelf"}
+MULTI_ACCURACY = {"tripleaxel", "triplekick"}
+MOLD_BREAKERS = {"moldbreaker", "teravolt", "turboblaze"}
+
+
+def _frac(v):
+    """DB 의 소수 표기(0.1667 등)를 정확한 분수로"""
+    for d in (3, 6, 12, 16, 8):
+        for n in range(1, d + 1):
+            if abs(v - n / d) < 1.5e-3:
+                return n / d
+    return v
+
+
+@dataclass
+class BMon:
+    spec: dict
+    maxhp: int
+    hp: int
+    name: str
+    types: list
+    sid: str = ""
+    status: str | None = None
+    tox: int = 0
+    sleep: int = 0
+    boosts: dict = field(default_factory=dict)
+    item: str = ""
+    ability: str = ""
+    vol: set = field(default_factory=set)
+    protect_n: int = 0
+    active_turns: int = 0
+    moves_made: int = 0
+    locked: str | None = None
+    recharge: bool = False
+    moved: bool = False
+    confusion: int = 0
+    leech_to: int = -1
+    sub: int = 0
+    trap: int = 0
+    taunt: int = 0
+    stockpile: int = 0
+    healblock: int = 0
+    yawn: int = 0
+    rampage: int = 0
+    encore: int = 0
+    last_move: str = ""
+    last_attacker: tuple | None = None
+    hurt_turn: int = -1
+    lowered_turn: int = -1
+    last_failed: bool = False
+    prev_failed: bool = False
+    times_attacked: int = 0
+    charge: str | None = None
+    semi: list | None = None
+    used: set = field(default_factory=set)
+
+    @property
+    def alive(self):
+        return self.hp > 0
+
+    def frac(self):
+        return self.hp / self.maxhp
+
+
+@dataclass
+class Side:
+    team: list
+    active: int = 0
+    hazards: dict = field(default_factory=dict)       # stealthrock / spikes(1~3) / toxicspikes(1~2) / stickyweb
+    screens: dict = field(default_factory=dict)       # reflect/light_screen/aurora_veil/tailwind/safeguard -> 남은 턴
+    wish: list | None = None                          # [남은 턴, 회복량]
+    heal_next: str | None = None                      # healingwish / lunardance
+
+    @property
+    def mon(self):
+        return self.team[self.active]
+
+    def alive_idx(self):
+        return [i for i, m in enumerate(self.team) if m.alive]
+
+
+@dataclass
+class State:
+    sides: list
+    weather: str | None = None
+    weather_turns: int = 0
+    terrain: str | None = None
+    terrain_turns: int = 0
+    turn: int = 0
+    winner: int | None = None        # 0 / 1 / -1(무승부)
+    last_hit: list = field(default_factory=lambda: [0, 0])
+    last_cat: list = field(default_factory=lambda: ["", ""])
+    log: list | None = None
+
+
+class Engine:
+    def __init__(self, data):
+        self.data = data
+        self._landed = False
+        self._pending = []
+        self._rng = random.Random(0)
+        self._policy = None
+        self._dmg_cache = {}
+        self.unsupported = {}
+
+    # ───────────────────────── 상태 만들기 ─────────────────────────
+    def new_state(self, team0, team1, log=False, rng=None):
+        rng = rng or random.Random(0)
+        sides = []
+        for team in (team0, team1):
+            mons = []
+            for spec in team:
+                m = make_mon(self.data, dict(spec, boosts={}, status=None, hp_frac=None))
+                mons.append(BMon(spec, m.maxhp, m.maxhp, m.name, list(m.types), sid=spec["sid"],
+                                 item=spec.get("item", ""), ability=spec.get("ability", "")))
+            sides.append(Side(mons))
+        st = State(sides, log=[] if log else None)
+        for i in sorted((0, 1), key=lambda i: (-self.speed_of(st, i), rng.random())):
+            self._switch_in(st, i, rng)
+        for s in sides:
+            s.mon.active_turns = 1
+        return st
+
+    def _say(self, st, msg):
+        if st.log is not None:
+            st.log.append(msg)
+
+    def _unsup(self, why):
+        self.unsupported[why] = self.unsupported.get(why, 0) + 1
+
+    # ───────────────────────── 계산 도우미 ─────────────────────────
+    def spec_of(self, bm: BMon):
+        s = bm.spec
+        return dict(sid=bm.sid, ability=bm.ability, item=bm.item, nature=s.get("nature", "Serious"), sp=s.get("sp", {}),
+                    boosts=dict(bm.boosts), status=bm.status, hp_frac=bm.hp / bm.maxhp, gender=s.get("gender", "N"), types=list(bm.types))
+
+    def field_for(self, st, defender_side):
+        scr = tuple(k for k in SCREENS if st.sides[defender_side].screens.get(k, 0) > 0)
+        return Field(st.weather, st.terrain, scr)
+
+    def rolls(self, st, ai_, di_, move_key, crit, hit=1):
+        A, D = st.sides[ai_].mon, st.sides[di_].mon
+        mv = self.data.moves[move_key]
+        dep = any(r["type"] in ("power_formula", "power_mult_if", "damage_formula") for r in mv["rules"])
+        sa, sd = self.spec_of(A), self.spec_of(D)
+        if not dep:
+            for sp_, m_ in ((sa, A), (sd, D)):
+                if m_.hp == m_.maxhp:
+                    sp_["hp_frac"] = None
+                elif m_.hp > m_.maxhp / 2:
+                    sp_["hp_frac"] = 0.75
+                elif m_.hp > m_.maxhp // 3:
+                    sp_["hp_frac"] = 0.45
+                else:
+                    sp_["hp_frac"] = 0.2
+        else:
+            sa["hp_frac"], sd["hp_frac"] = round(sa["hp_frac"], 2) or 0.01, round(sd["hp_frac"], 2) or 0.01
+        F = self.field_for(st, di_)
+        fl = {"progress"}
+        if D.hurt_turn == st.turn:
+            fl.add("target_hurt_this_turn")
+        if A.last_attacker == (st.turn, st.sides[di_].active):
+            fl.add("user_hit_by_target_this_turn")
+        if A.lowered_turn == st.turn:
+            fl.add("user_stats_lowered_this_turn")
+        if D.moved:
+            fl.add("user_moves_after_target")
+        if A.prev_failed:
+            fl.add("last_move_failed")
+        fl.add(f"times_attacked:{A.times_attacked}")
+        fl.add(f"fainted_allies:{sum(1 for m in st.sides[ai_].team if not m.alive)}")
+        fl = frozenset(fl)
+        key = (fl, repr(sorted((k, repr(v)) for k, v in sa.items())), repr(sorted((k, repr(v)) for k, v in sd.items())),
+               move_key, F.weather, F.terrain, F.screens, crit, hit)
+        r = self._dmg_cache.get(key)
+        if r is None:
+            r = calc(self.data, sa, sd, mv["name"], F, crit, hit=hit, proc=False, flags=fl)
+            if len(self._dmg_cache) > 200000:
+                self._dmg_cache.clear()
+            self._dmg_cache[key] = r
+        return r
+
+    def speed_of(self, st, i):
+        bm = st.sides[i].mon
+        m = make_mon(self.data, self.spec_of(bm))
+        c = Ctx(self.data, m, m, {}, Field(st.weather, st.terrain), False)
+        s = calc_speed(c, m)
+        if st.sides[i].screens.get("tailwind", 0) > 0:
+            s *= 2
+        return s
+
+    def hp_change(self, st, side, bm, delta, why=""):
+        before = bm.hp
+        if delta > 0 and bm.healblock:
+            return 0
+        bm.hp = max(0, min(bm.maxhp, bm.hp + delta))
+        if before and not bm.hp:
+            bm.status = None
+            self._say(st, f"  {bm.name} 쓰러짐 ({why})")
+        return bm.hp - before
+
+    # ───────────────────────── DB hook 행 ─────────────────────────
+    def rows(self, bm, hook):
+        out = []
+        ab = norm(bm.ability)
+        for r in self.data.ability_fx.get(ab, []):
+            if r["hook"] == hook:
+                out.append(("ability", r))
+        if bm.item and ab != "klutz" and "embargo" not in bm.vol:
+            for r in self.data.item_fx.get(norm(bm.item), []):
+                if r["hook"] == hook:
+                    out.append(("item", r))
+        return out
+
+    def _cond_ok(self, cond, st, side, bm, mv=None, hp_before=None):
+        if not cond:
+            return True
+        for k, v in cond.items():
+            if k == "contact":
+                if not mv or ("contact" in mv["flags"]) != bool(v):
+                    return False
+            elif k == "move_type":
+                if not mv or mv["type"] not in str(v).split("|"):
+                    return False
+            elif k == "move_category":
+                if not mv or mv["category"] not in str(v).split("|"):
+                    return False
+            elif k == "weather":
+                if st.weather != v:
+                    return False
+            elif k == "terrain":
+                if st.terrain != v:
+                    return False
+            elif k == "status":
+                if bm.status not in str(v).split("|"):
+                    return False
+            elif k == "hp_frac_max":
+                if bm.frac() > v:
+                    return False
+            elif k == "crosses_half_hp":
+                if hp_before is None or not (hp_before > bm.maxhp / 2 >= bm.hp):
+                    return False
+            elif k == "hp_full":
+                if (bm.hp == bm.maxhp) != bool(v):
+                    return False
+            elif k == "self_item_empty":
+                if bool(bm.item) == bool(v):
+                    return False
+            elif k in ("intimidated", "opposite_gender"):
+                return False
+            elif k in ("species", "max_layers", "ally_type", "up", "down", "excluded", "by_foe", "ally", "target_side", "direct", "bp_max"):
+                pass
+            else:
+                return False
+        return True
+
+    def _consume(self, st, bm):
+        bm.item = ""
+
+    @staticmethod
+    def _is_consumable(name):
+        n = norm(name)
+        return n.endswith("berry") or n.endswith("seed") or n in ("airballoon", "redcard", "ejectbutton", "whiteherb", "mentalherb")
+
+    def apply_row(self, st, src, row, side, bm, rng, mv=None, dmg=0, foe_side=None):
+        """hook 행 하나를 적용. side/bm 은 효과 소유자, foe_side 는 상대편(attacker/foe 대상)"""
+        if row["chance"] is not None and row["chance"] < 100 and rng.random() * 100 >= row["chance"]:
+            return False
+        o = 1 - side if foe_side is None else foe_side
+        foe = st.sides[o].mon
+        kind, tgt, code, val = row["kind"], row["target"], row["code"], row["value"]
+        tside, tm = (side, bm) if tgt in (None, "self") else (o, foe)
+        applied = True
+        if kind == "stat_stage":
+            if code == "highest_stat":
+                m = make_mon(self.data, self.spec_of(bm))
+                code = max(("atk", "def", "spa", "spd", "spe"), key=lambda k: m.stats[k])
+            if tm.alive:
+                self.change_boost(st, tside, tm, code, int(val), src_side=(side if tside != side else None))
+        elif kind == "status":
+            if tm.alive:
+                if code.startswith("random:"):
+                    code = rng.choice(code[7:].split("|"))
+                self.try_status(st, tside, tm, code, rng, src_side=side)
+        elif kind == "damage_frac":
+            if tm.alive and norm(tm.ability) != "magicguard":
+                d = dmg if code == "equal_to_last_damage" else max(1, math.floor(tm.maxhp * _frac(val) + 1e-9))
+                self.hp_change(st, tside, tm, -d, src)
+        elif kind == "heal_frac":
+            if tm.alive:
+                self.hp_change(st, tside, tm, max(1, math.floor(tm.maxhp * _frac(val) + 1e-9)), src)
+        elif kind == "heal_fixed":
+            if tm.alive:
+                self.hp_change(st, tside, tm, int(val), src)
+        elif kind == "heal_dmg_frac":
+            if tm.alive and dmg:
+                self.hp_change(st, tside, tm, max(1, math.floor(dmg * _frac(val))), src)
+        elif kind == "set_weather":
+            self._set_weather(st, code, bm)
+        elif kind == "set_terrain":
+            st.terrain = code
+            st.terrain_turns = 8 if any(r["code"] == "extend_terrain" for r in self.data.item_fx.get(norm(bm.item), [])) else 5
+        elif kind == "cure_status":
+            if bm.status and (code in ("any", None) or bm.status in code.split("|")):
+                bm.status = None
+        elif kind == "volatile":
+            if code == "flinch" and tm.alive and not tm.moved and norm(tm.ability) != "innerfocus":
+                tm.vol.add("flinch")
+            elif code != "flinch":
+                applied = False
+                self._unsup("hook-volatile:" + str(code))
+        elif kind == "special":
+            if code == "pop_balloon":
+                pass
+            elif code == "set_toxic_spikes":
+                t = st.sides[o]
+                t.hazards["toxicspikes"] = min(int(row["cond"].get("max_layers", 2)), t.hazards.get("toxicspikes", 0) + int(val or 1))
+            elif code == "reset_negative_stages":
+                for k in list(bm.boosts):
+                    if bm.boosts[k] < 0:
+                        bm.boosts[k] = 0
+            elif code == "force_attacker_switch":
+                def red():
+                    cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
+                    if cand and st.sides[o].mon.alive:
+                        self._switch_in(st, o, self._rng, to=self._rng.choice(cand))
+                self._pending.append(red)
+            elif code == "self_switch_out":
+                def eject():
+                    cand = [j for j in st.sides[side].alive_idx() if j != st.sides[side].active]
+                    if cand and st.sides[side].mon.alive:
+                        j = self._policy(st, side) if self._policy else cand[0]
+                        self._switch_in(st, side, self._rng, to=j if j in cand else cand[0])
+                self._pending.append(eject)
+            elif code in ("aegislash_stance", "illusion", "choice_lock", "grounded", "mega_stone", "first_hit_zero_damage"):
+                applied = False
+            else:
+                applied = False
+                self._unsup(f"hook-special:{code}")
+        else:
+            applied = False
+            self._unsup(f"hook:{kind}")
+        if applied and src.startswith("item:") and self._is_consumable(bm.item):
+            self._consume(st, bm)
+        return applied
+
+    def run_hook(self, st, side, bm, hook, rng, mv=None, dmg=0, hp_before=None, foe_side=None):
+        for src, r in self.rows(bm, hook):
+            if not self._cond_ok(r["cond"], st, side, bm, mv, hp_before):
+                continue
+            if src == "item" and not bm.item:
+                continue
+            tag = ("item:" if src == "item" else "ability:") + r["label"].split(":", 1)[1]
+            self.apply_row(st, tag, r, side, bm, rng, mv, dmg, foe_side)
+            if not bm.alive and hook not in ("on_hit_dealt", "turn_end"):
+                break
+
+    # ───────────────────────── 능력 단계 / 상태이상 ─────────────────────────
+    def change_boost(self, st, side, bm, stat, n, src_side=None):
+        """src_side 가 있으면 상대에게서 온 변화 (방어 특성/반격 특성 적용)"""
+        ab = norm(bm.ability)
+        if ab == "contrary":
+            n = -n
+        elif ab == "simple":
+            n *= 2
+        from_foe = src_side is not None
+        if n < 0 and from_foe and bm.sub > 0:
+            return 0
+        if n < 0 and from_foe:
+            for r in self.data.ability_fx.get(ab, []):
+                if r["hook"] == "on_stat_drop" and r["kind"] == "immune" and r["code"] in ("all", stat, {"accuracy": "acc"}.get(stat, stat)):
+                    return 0
+            if ab == "mirrorarmor":
+                return self.change_boost(st, src_side, st.sides[src_side].mon, stat, n)
+            if st.terrain == "misty" and False:
+                return 0
+        old = bm.boosts.get(stat, 0)
+        new = max(-6, min(6, old + n))
+        bm.boosts[stat] = new
+        if n < 0 and new != old:
+            bm.lowered_turn = st.turn
+            for src, r in self.rows(bm, "on_stat_drop"):
+                if r["kind"] == "stat_stage" and r["cond"].get("by_foe") and from_foe:
+                    bm.boosts[r["code"]] = min(6, bm.boosts.get(r["code"], 0) + int(r["value"]))
+                elif r["kind"] == "special" and r["code"] == "reset_negative_stages" and bm.item:
+                    def herb(bm=bm):
+                        if bm.item and any(v < 0 for v in bm.boosts.values()):
+                            for k in list(bm.boosts):
+                                if bm.boosts[k] < 0:
+                                    bm.boosts[k] = 0
+                            bm.item = ""
+                    self._pending.append(herb)
+        return new - old
+
+    def try_status(self, st, side, bm, code, rng, src_side=None):
+        if bm.status or not bm.alive:
+            return False
+        if bm.sub > 0 and src_side is not None and src_side != side:
+            return False
+        ab = norm(bm.ability)
+        if "safeguard" in st.sides[side].screens and src_side != side:
+            return False
+        for r in self.data.ability_fx.get(ab, []):
+            if r["hook"] == "immunity" and r["kind"] == "immune" and (r["code"] or "").startswith("status:"):
+                s = r["code"].split(":")[1]
+                if (s == code or s == "any" or (s == "psn" and code == "tox")) and self._cond_ok(r["cond"], st, side, bm):
+                    return False
+        if code in ("psn", "tox"):
+            if "Poison" in bm.types or "Steel" in bm.types:
+                return False
+        elif STATUS_IMMUNE_TYPE.get(code) in bm.types:
+            return False
+        if code == "frz" and st.weather == "sun":
+            return False
+        if code == "slp" and st.terrain == "electric" and self._grounded(bm):
+            return False
+        if st.terrain == "misty" and self._grounded(bm):
+            return False
+        if code == "slp":
+            bm.sleep = rng.randint(1, 3)
+        bm.status = code
+        bm.tox = 1 if code == "tox" else 0
+        self._say(st, f"  {bm.name} → {code}")
+        self._status_item_cure(st, bm, code)
+        if bm.status and ab == "synchronize" and src_side is not None and src_side != side and code in ("par", "brn", "psn", "tox"):
+            self.try_status(st, src_side, st.sides[src_side].mon, code, rng, src_side=side)
+        return True
+
+    def _status_item_cure(self, st, bm, code):
+        for src, r in self.rows(bm, "on_status"):
+            if r["kind"] == "cure_status" and bm.item and src == "item":
+                codes = (r["code"] or "").split("|")
+                if "any" in codes or code in codes or (code == "tox" and "psn" in codes):
+                    bm.status = None
+                    self._consume(st, bm)
+                    break
+
+    def _grounded(self, bm):
+        if norm(bm.item) == "ironball":
+            return True
+        return "Flying" not in bm.types and norm(bm.ability) not in ("levitate", "eelevate") and norm(bm.item) != "airballoon"
+
+    # ───────────────────────── 교체 ─────────────────────────
+    def _switch_in(self, st, side, rng, to=None, carry=False):
+        S = st.sides[side]
+        passed = None
+        if to is not None:
+            old = S.mon
+            if carry:
+                passed = (dict(old.boosts), old.sub, {v for v in old.vol if v in ("leechseed", "focusenergy")})
+            old.boosts, old.vol, old.locked, old.protect_n, old.recharge = {}, set(), None, 0, False
+            old.sub, old.charge, old.semi, old.trap = 0, None, None, 0
+            for src, r in self.rows(old, "switch_out"):
+                if r["kind"] == "heal_frac" and old.alive:
+                    old.hp = min(old.maxhp, old.hp + math.floor(old.maxhp * _frac(r["value"]) + 1e-9))
+                elif r["kind"] == "cure_status":
+                    old.status = None
+            if old.status == "tox":
+                old.tox = 1
+            if old.sid == "aegislashblade":
+                old.sid = "aegislash"
+            S.active = to
+        bm = S.mon
+        bm.active_turns, bm.moves_made, bm.moved, bm.used = 0, 0, False, set()
+        bm.taunt = bm.stockpile = bm.yawn = bm.encore = bm.healblock = bm.rampage = 0
+        bm.last_move = ""
+        if passed:
+            bm.boosts, bm.sub, bm.vol = passed[0], passed[1], set(passed[2])
+        self._say(st, f"[{side}] {bm.name} 등장")
+        if S.heal_next:
+            bm.hp, bm.status = bm.maxhp, None
+            S.heal_next = None
+        if not self._item_is(bm, "heavydutyboots"):
+            if S.hazards.get("stealthrock"):
+                eff = 1.0
+                for t in bm.types:
+                    eff *= self.data.type_chart.get(("Rock", t), 1.0)
+                self.hp_change(st, side, bm, -math.floor(bm.maxhp * eff / 8), "스텔스록")
+            if self._grounded(bm) and bm.alive:
+                if S.hazards.get("spikes"):
+                    self.hp_change(st, side, bm, -math.floor(bm.maxhp / {1: 8, 2: 6, 3: 4}[S.hazards["spikes"]]), "압정")
+                if S.hazards.get("toxicspikes"):
+                    if "Poison" in bm.types:
+                        S.hazards.pop("toxicspikes")
+                    else:
+                        self.try_status(st, side, bm, "tox" if S.hazards["toxicspikes"] >= 2 else "psn", rng)
+                if S.hazards.get("stickyweb"):
+                    self.change_boost(st, side, bm, "spe", -1, src_side=1 - side)
+        if not bm.alive:
+            return
+        self._run_switch_in(st, side, bm, rng)
+
+    def _run_switch_in(self, st, side, bm, rng):
+        foe = st.sides[1 - side].mon
+        for src, r in self.rows(bm, "switch_in"):
+            if not self._cond_ok(r["cond"], st, side, bm):
+                continue
+            if src == "item" and not bm.item:
+                continue
+            if r["kind"] == "info" or (r["kind"] == "heal_frac" and r["target"] == "ally"):
+                continue
+            if r["kind"] == "stat_stage" and r["target"] == "foe":
+                if not foe.alive or "substitute" in foe.vol:
+                    continue
+                if r["label"].endswith("Intimidate"):
+                    if any(r2["hook"] == "immunity" and r2["code"] == "ability:intimidate" for r2 in self.data.ability_fx.get(norm(foe.ability), [])):
+                        continue
+                self.change_boost(st, 1 - side, foe, r["code"], int(r["value"]), src_side=side)
+                if r["label"].endswith("Intimidate") and foe.alive:
+                    for src2, r2 in self.rows(foe, "immunity") + self.rows(foe, "on_hit_taken"):
+                        if r2["cond"].get("intimidated") and r2["kind"] == "stat_stage":
+                            self.change_boost(st, 1 - side, foe, r2["code"], int(r2["value"]))
+                continue
+            self.apply_row(st, ("item:" if src == "item" else "ability:") + r["label"].split(":", 1)[1], r, side, bm, rng)
+
+    @staticmethod
+    def _item_is(bm, name):
+        return norm(bm.item) == name
+
+    def _set_weather(self, st, w, bm):
+        st.weather = w
+        rock = WEATHER_ROCK.get(w)
+        st.weather_turns = 8 if rock and norm(bm.item) == rock else 5
+
+    # ───────────────────────── 선택지 ─────────────────────────
+    def legal_actions(self, st, side):
+        S = st.sides[side]
+        bm = S.mon
+        if bm.recharge:
+            return [("r", 0)]
+        moves = bm.spec["moves"]
+        acts = []
+        if bm.moves_made >= 1:           # 등장 직후 한 번만 쓸 수 있는 기술(猫だまし 등)은 선택 불가
+            first_only = {k for k, m in enumerate(moves) if any(
+                r["type"] == "use_condition" and r["params"].get("requires") == "first_turn_after_switch_in"
+                for r in self.data.moves[norm(m)]["rules"])}
+        else:
+            first_only = set()
+        if bm.charge:
+            return [("m", next(k for k, m in enumerate(moves) if norm(m) == bm.charge))]
+        if bm.rampage and bm.last_move:
+            ks = [k for k, m in enumerate(moves) if norm(m) == bm.last_move]
+            if ks:
+                return [("m", ks[0])]
+        if bm.encore and bm.last_move:
+            ks = [k for k, m in enumerate(moves) if norm(m) == bm.last_move]
+            if ks:
+                acts = [("m", ks[0])]
+                if not bm.trap and norm(st.sides[1 - side].mon.ability) != "shadowtag":
+                    acts += [("s", j) for j in S.alive_idx() if j != S.active]
+                return acts
+        if bm.taunt:
+            ok = [k for k, m in enumerate(moves) if self.data.moves[norm(m)]["category"] != "status"]
+            if ok:
+                acts = [("m", k) for k in ok]
+                if not bm.trap and norm(st.sides[1 - side].mon.ability) != "shadowtag":
+                    acts += [("s", j) for j in S.alive_idx() if j != S.active]
+                return acts
+        if bm.locked and bm.locked in moves:
+            acts.append(("m", moves.index(bm.locked)))
+        else:
+            acts += [("m", i) for i in range(len(moves)) if i not in first_only] or [("m", i) for i in range(len(moves))]
+        if not bm.trap and "shadowtag" != norm(st.sides[1 - side].mon.ability):
+            acts += [("s", j) for j in S.alive_idx() if j != S.active]
+        elif norm(bm.item) == "shedshell" or ("Ghost" in bm.types and not bm.trap):
+            acts += [("s", j) for j in S.alive_idx() if j != S.active]
+        return acts
+
+    # ───────────────────────── 턴 진행 ─────────────────────────
+    def step(self, st, acts, rng, switch_policy=None):
+        """한 턴 진행. acts = [행동0, 행동1], 행동 = ('m', 기술번호) | ('s', 교체번호) | ('r', 0)"""
+        if st.winner is not None:
+            return st
+        self._rng, self._policy = rng, switch_policy
+        st.turn += 1
+        st.last_hit = [0, 0]
+        st.last_cat = ["", ""]
+        for i in (0, 1):
+            m = st.sides[i].mon
+            m.vol.discard("flinch")
+            m.vol.discard("protecting")
+            m.vol.discard("enduring")
+            for k in list(m.vol):
+                if k in CONTACT_PUNISH:
+                    m.vol.discard(k)
+            m.moved = False
+        self._say(st, f"== 턴 {st.turn} ==")
+        sw = [i for i in (0, 1) if acts[i][0] == "s"]
+        for i in sorted(sw, key=lambda i: (-self.speed_of(st, i), rng.random())):
+            self._switch_in(st, i, rng, to=acts[i][1])
+        movers = []
+        for i in (0, 1):
+            if acts[i][0] in ("m", "r"):
+                bm = st.sides[i].mon
+                mv = self.data.moves[norm(bm.spec["moves"][acts[i][1]])] if acts[i][0] == "m" else None
+                movers.append((i, self._priority(st, i, mv) if mv else 0, self.speed_of(st, i), rng.random()))
+        movers.sort(key=lambda x: (-x[1], -x[2], x[3]))
+        starts = [st.sides[0].active, st.sides[1].active]
+        for (i, pr, spd, _) in movers:
+            if st.sides[i].active != starts[i]:
+                continue
+            if st.winner is not None:
+                break
+            if not st.sides[i].mon.alive or acts[i][0] == "s":
+                continue
+            self._do_action(st, i, acts[i], acts, rng, switch_policy)
+            pend, self._pending = self._pending, []
+            for fn in pend:
+                fn()
+            self._check_winner(st)
+        if st.winner is None:
+            self._end_of_turn(st, rng)
+            self._check_winner(st)
+        for i in (0, 1):
+            if st.winner is None and not st.sides[i].mon.alive:
+                self._replace(st, i, rng, switch_policy)
+        for i in (0, 1):
+            st.sides[i].mon.active_turns += 1
+        self._check_winner(st)
+        return st
+
+    def _replace(self, st, i, rng, switch_policy):
+        alive = st.sides[i].alive_idx()
+        if not alive:
+            return
+        j = switch_policy(st, i) if switch_policy else alive[0]
+        if j not in alive:
+            j = alive[0]
+        self._switch_in(st, i, rng, to=j)
+
+    def _check_winner(self, st):
+        dead = [not st.sides[i].alive_idx() for i in (0, 1)]
+        if dead[0] and dead[1]:
+            st.winner = -1
+        elif dead[0]:
+            st.winner = 1
+        elif dead[1]:
+            st.winner = 0
+
+    def _priority(self, st, i, mv):
+        bm = st.sides[i].mon
+        p = mv["priority"]
+        ab = norm(bm.ability)
+        if ab == "prankster" and mv["category"] == "status":
+            p += 1
+        if ab == "galewings" and mv["type"] == "Flying" and bm.hp == bm.maxhp:
+            p += 1
+        if norm(mv["name"]) == "grassyglide" and st.terrain == "grassy" and self._grounded(bm):
+            p += 1
+        return p
+
+    # ───────────────────────── 행동 수행 ─────────────────────────
+    def _can_act(self, st, i, bm, rng):
+        if bm.status == "slp":
+            bm.sleep -= 1
+            if bm.sleep <= 0:
+                bm.status = None
+                self._say(st, f"  {bm.name} 일어남")
+            else:
+                return False
+        if bm.status == "frz":
+            if rng.random() < 0.2:
+                bm.status = None
+            else:
+                return False
+        if "flinch" in bm.vol:
+            for src, r in self.rows(bm, "on_flinch"):
+                if r["kind"] == "stat_stage":
+                    self.change_boost(st, i, bm, r["code"], int(r["value"]))
+            return False
+        if "confusion" in bm.vol:
+            bm.confusion -= 1
+            if bm.confusion <= 0:
+                bm.vol.discard("confusion")
+            elif rng.random() < 1 / 3:
+                self.hp_change(st, i, bm, -min(bm.hp, max(1, bm.maxhp // 10)), "혼란")
+                return False
+        if bm.status == "par" and rng.random() < 0.25:
+            return False
+        return True
+
+    def _do_action(self, st, i, act, acts, rng, switch_policy):
+        S = st.sides[i]
+        bm = S.mon
+        if act[0] == "r" or bm.recharge:
+            bm.recharge = False
+            return
+        mname = bm.spec["moves"][act[1]]
+        if bm.rampage and bm.last_move:
+            mname = next((m for m in bm.spec["moves"] if norm(m) == bm.last_move), mname)
+        if bm.encore and bm.last_move and norm(mname) != bm.last_move:
+            mname = next((m for m in bm.spec["moves"] if norm(m) == bm.last_move), mname)
+        mv = self.data.moves[norm(mname)]
+        self._say(st, f"[{i}] {bm.name}: {mv['name']}")
+        bm.moves_made += 1
+        bm.vol.discard("glaiverush")
+        bm.vol.discard("destinybond")
+        bm.prev_failed, bm.last_failed = bm.last_failed, True            # 성공 지점에서 False 로 바꾼다 (자폭/심술/고집 등 '직전 기술 실패' 조건용)
+        # 스탠스체인지: 공격하면 블레이드폼, 킹실드는 실드폼
+        if norm(bm.ability) == "stancechange" and bm.sid in ("aegislash", "aegislashblade"):
+            if norm(mv["name"]) == "kingsshield":
+                bm.sid = "aegislash"
+            elif mv["category"] != "status":
+                bm.sid = "aegislashblade"
+        if not self._can_act(st, i, bm, rng):
+            if norm(bm.item) not in CHOICE:
+                bm.locked = None
+            bm.charge, bm.semi = None, None
+            bm.rampage = 0
+            return
+        if bm.taunt and mv["category"] == "status":
+            self._say(st, "  도발로 사용 불가")
+            return
+        if norm(bm.item) in CHOICE:
+            bm.locked = mname
+        bm.moved = True
+        if norm(mname) not in ("encore",):
+            bm.last_move = norm(mname)
+        chg = next((r["params"] for r in mv["rules"] if r["type"] == "charge_move"), None)
+        if chg is not None:
+            if bm.charge == norm(mname):                      # 두 번째 턴: 공격
+                bm.charge, bm.semi = None, None
+            elif str(chg.get("skip_if", "")) == "weather:" + str(
+                    "sun" if any(r["code"] == "treat_weather_as:sun" for r in self.data.ability_fx.get(norm(bm.ability), [])) else st.weather):
+                pass                                          # 날씨 조건으로 즉시 발동
+            else:                                             # 첫 턴: 충전
+                bm.charge = norm(mname)
+                for k, v in (chg.get("charge_boost") or {}).items():
+                    self.change_boost(st, i, bm, k, int(v))
+                if chg.get("evasion_max") in ("flying", "underground", "underwater", "shadow"):
+                    bm.semi = [norm(x) for x in chg.get("hit_by_moves", [])]
+                self._say(st, "  충전")
+                return
+        bm.used.add(norm(mname))
+        if norm(mv["name"]) not in PROTECT_MOVES:
+            bm.protect_n = 0
+        if not self._use_condition_ok(st, i, mv, acts):
+            return
+        counter_fail = norm(mv["name"]) in ("counter", "mirrorcoat", "metalburst") and not st.last_hit[i]
+        if norm(bm.ability) in ("protean", "libero") and "protean" not in bm.vol and not counter_fail:
+            bm.vol.add("protean")
+            bm.types = [mv["type"]]
+        o = 1 - i
+        target_is_self = mv["target"] in NON_FOE_TARGETS
+        D = st.sides[o].mon
+        foe_target = not target_is_self
+        if foe_target and D.semi is not None and norm(bm.ability) != "noguard" and norm(D.ability) != "noguard" and norm(mv["name"]) not in D.semi:
+            self._say(st, "  빗나감(반무적 상태)")
+            return
+        if foe_target and st.terrain == "psychic" and self._grounded(D) and self._priority(st, i, mv) > 0:
+            self._say(st, "  사이코필드가 선공기를 막음")
+            return
+        if foe_target and self._ability_blocks(st, i, o, mv, rng):
+            return
+        if "protecting" in D.vol and "protect" in mv["flags"] and foe_target:
+            self._say(st, "  막혔다")
+            self._contact_punish(st, i, o, mv, rng)
+            for r in mv["rules"]:
+                if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and bm.alive:
+                    self.hp_change(st, i, bm, -math.floor(bm.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
+            return
+        if mv["category"] == "status" and mv["bp"] == 0:
+            self._status_move(st, i, mv, rng)
+            bm.last_failed = False
+            return
+        if norm(mv["name"]) not in MULTI_ACCURACY and not self._hits(st, i, o, mv, rng, target_is_self):
+            self._say(st, "  빗나감")
+            if mv["name"].lower() in ("jump kick", "high jump kick"):
+                self.hp_change(st, i, bm, -bm.maxhp // 2, "크래시")
+            return
+        self._damage_move(st, i, o, mv, rng, switch_policy)
+        if self._landed:
+            bm.last_failed = False
+            if any(e["code"] == "lockedmove" for e in mv["effects"]):
+                if not bm.rampage:
+                    bm.rampage = rng.choice([2, 3])         # 이 턴 포함 남은 횟수
+                bm.rampage -= 1
+                if bm.rampage == 0 and bm.alive and norm(bm.ability) != "owntempo" and "confusion" not in bm.vol:
+                    bm.vol.add("confusion")
+                    bm.confusion = rng.randint(2, 5)
+        elif bm.rampage:
+            bm.rampage = 0
+
+    def _chart_immune(self, mv, D):
+        t = mv["type"]
+        if any(self.data.type_chart.get((t, x), 1.0) == 0 for x in D.types):
+            return not (t == "Ground" and any(r["code"] == "ground_immunity" for r in self.data.item_fx.get(norm(D.item), [])))
+        return t == "Ground" and not self._grounded(D)
+
+    def _ability_blocks(self, st, i, o, mv, rng):
+        """상대 특성이 기술을 무효화/흡수하는 경우 (DB immunity 행). True 면 기술은 더 진행하지 않는다"""
+        A, D = st.sides[i].mon, st.sides[o].mon
+        if norm(A.ability) in MOLD_BREAKERS and norm(D.ability) in self.data.breakable:
+            return False
+        for r in self.data.ability_fx.get(norm(D.ability), []):
+            if r["hook"] != "immunity":
+                continue
+            code = r["code"] or ""
+            if r["kind"] == "absorb" and code == mv["type"]:
+                if r["value"]:
+                    self.hp_change(st, o, D, max(1, math.floor(D.maxhp * _frac(r["value"]))), "흡수")
+                else:
+                    D.vol.add("flashfire")
+                self._say(st, f"  {D.name} 흡수")
+                return True
+            if r["kind"] == "immune" and code == "type:" + mv["type"] and mv["type"] != "Ground":
+                for r2 in self.data.ability_fx.get(norm(D.ability), []):
+                    if r2["hook"] == "on_hit_taken" and r2["kind"] == "stat_stage" and mv["type"] in str(r2["cond"].get("move_type", "")).split("|"):
+                        self.change_boost(st, o, D, r2["code"], int(r2["value"]))
+                return True
+            if r["kind"] == "immune" and code == "priority_moves" and self._priority(st, i, mv) > 0:
+                return True
+            if r["kind"] == "immune" and code == "move_class:status" and mv["category"] == "status":
+                return True
+        return False
+
+    def _use_condition_ok(self, st, i, mv, acts):
+        bm = st.sides[i].mon
+        for r in mv["rules"]:
+            if r["type"] != "use_condition":
+                continue
+            p = r["params"]
+            req = p.get("requires", "")
+            if req == "first_turn_after_switch_in" and bm.moves_made != 1:
+                return False
+            if req == "target_has_item" and not st.sides[1 - i].mon.item:
+                return False
+            if req == "user_asleep" and bm.status != "slp":
+                return False
+            if req == "weather:snow" and st.weather != "snow":
+                return False
+            if req == "terrain_active" and not st.terrain:
+                return False
+            if req.startswith("user_has_type:") and req.split(":")[1] not in bm.types:
+                return False
+            if req == "target_will_use_attacking_move":
+                o = 1 - i
+                a = acts[o]
+                if a[0] != "m" or st.sides[o].mon.moved or self.data.moves[norm(st.sides[o].mon.spec["moves"][a[1]])]["category"] == "status":
+                    return False
+            for tok in p.get("fails_if", "").split("|"):
+                if tok == "user_full_hp" and bm.hp == bm.maxhp:
+                    return False
+                if tok == "user_asleep" and bm.status == "slp":
+                    return False
+                if tok.startswith("target_has_type:") and tok.split(":")[1] in st.sides[1 - i].mon.types:
+                    return False
+                if tok.startswith("user_hp_frac<=") and bm.frac() <= float(tok.split("<=")[1]):
+                    return False
+        return True
+
+    def _hits(self, st, i, o, mv, rng, target_is_self):
+        A, D = st.sides[i].mon, st.sides[o].mon
+        acc = mv["accuracy"]
+        if acc is None or target_is_self:
+            return True
+        aab, dab = norm(A.ability), norm(D.ability)
+        if aab in ("nolimit", "noguard") or dab == "noguard" or "glaiverush" in D.vol:
+            return True
+        if mv["ohko"]:
+            return rng.random() < 0.3
+        a = acc
+        if aab == "compoundeyes":
+            a = a * 1.3
+        if norm(A.item) == "widelens":
+            a = a * 1.1
+        if norm(D.item) == "brightpowder":
+            a = a * 0.9
+        if (st.weather == "sand" and dab == "sandveil") or (st.weather == "snow" and dab == "snowcloak"):
+            a = a * 0.8
+        if aab == "hustle" and mv["category"] == "physical":
+            a = a * 0.8
+        if mv["name"].lower() in ("thunder", "hurricane") and st.weather == "rain":
+            return True
+        if mv["name"].lower() == "blizzard" and st.weather == "snow":
+            return True
+        stage = max(-6, min(6, A.boosts.get("accuracy", 0) - (0 if dab == "unaware" else D.boosts.get("evasion", 0))))
+        ratio = (3 + stage) / 3 if stage >= 0 else 3 / (3 - stage)
+        return rng.random() * 100 < math.floor(a * ratio)
+
+    def _crit(self, mv, A, D, rng):
+        if norm(D.ability) in ("battlearmor", "shellarmor"):
+            return False
+        if mv["always_crit"]:
+            return True
+        stage = mv["crit_stage"] + (1 if norm(A.item) in ("scopelens", "razorclaw") else 0) + (2 if "focusenergy" in A.vol else 0)
+        if norm(A.ability) == "superluck":
+            stage += 1
+        return rng.random() < [1 / 24, 1 / 8, 1 / 2, 1, 1][min(stage, 4)]
+
+    def _damage_move(self, st, i, o, mv, rng, switch_policy):
+        A, D = st.sides[i].mon, st.sides[o].mon
+        key = norm(mv["name"])
+        nhits = mv["max_hits"] if mv["min_hits"] == mv["max_hits"] else (
+            rng.choices([2, 3, 4, 5], [35, 35, 15, 15])[0] if (mv["min_hits"], mv["max_hits"]) == (2, 5) else rng.randint(mv["min_hits"], mv["max_hits"]))
+        if norm(A.ability) == "skilllink" and mv["max_hits"] == 5:
+            nhits = 5
+        total, landed = 0, 0
+        eff_mv = mv
+        berry_used = False
+        self._landed = False
+        late_item = False
+        hit_sub = False
+        for h in range(1, nhits + 1):
+            if not D.alive or not A.alive:
+                break
+            if key in MULTI_ACCURACY and norm(A.ability) != "skilllink" and not self._hits(st, i, o, mv, rng, False):
+                if h == 1:
+                    self._say(st, "  빗나감")
+                break
+            if mv["fixed_damage"] or key in ("seismictoss", "nightshade"):
+                if self._chart_immune(mv, D):
+                    self._say(st, "  효과 없음")
+                    return
+                dmg, crit = mv["fixed_damage"] or 50, False
+            elif mv["ohko"]:
+                imm = self.rolls(st, i, o, key, False)
+                if imm["reason"] == "immune":
+                    return
+                dmg, crit = D.hp, False
+            elif key in ("counter", "mirrorcoat", "metalburst", "comeuppance"):
+                last, cat = st.last_hit[i], st.last_cat[i]
+                need = {"counter": "physical", "mirrorcoat": "special"}.get(key)
+                if not last or (need and cat != need) or self._chart_immune(mv, D):
+                    return
+                dmg, crit = max(1, math.floor(last * (2.0 if key in ("counter", "mirrorcoat") else 1.5))), False
+            elif key == "superfang":
+                if self._chart_immune(mv, D):
+                    return
+                dmg, crit = max(1, D.hp // 2), False
+            elif key == "endeavor":
+                if self._chart_immune(mv, D) or A.hp >= D.hp:
+                    return
+                dmg, crit = D.hp - A.hp, False
+            else:
+                crit = self._crit(mv, A, D, rng)
+                r = self.rolls(st, i, o, key, crit, hit=h)
+                if r["rolls"] is None:
+                    if r["reason"] == "immune":
+                        self._say(st, "  효과 없음")
+                    elif r["reason"] == "fail":
+                        self._say(st, "  실패")
+                    return
+                dmg = rng.choice(r["rolls"])
+                if r.get("mid", {}).get("moveType"):
+                    eff_mv = dict(mv, type=r["mid"]["moveType"])
+                if D.item and norm(D.item).endswith("berry") and "item:" + D.item in r.get("used", []):
+                    berry_used = True
+                if "glaiverush" in D.vol:
+                    dmg *= 2
+            hp_before = D.hp
+            if D.sub > 0 and "bypasssub" not in mv["flags"] and norm(A.ability) != "infiltrator":
+                d = min(dmg, D.sub)
+                D.sub -= d
+                total += d
+                landed += 1
+                hit_sub = True
+                self._say(st, f"  대타 -{d}")
+                continue
+            if "busted" not in D.vol and norm(D.ability) == "disguise" and D.sid == "mimikyu":      # 탈 (첫 피격 무효, 최대 HP의 1/8 손해)
+                D.vol.add("busted")
+                self.hp_change(st, o, D, -max(1, D.maxhp // 8), "탈")
+                self._say(st, "  탈 벗겨짐")
+                landed += 1
+                late_item = True
+                continue
+            if "gem" in self._gem_flag(A, mv):
+                A.item = ""
+            if "enduring" in D.vol and dmg >= D.hp:
+                dmg = D.hp - 1
+            if (D.hp == D.maxhp and dmg >= D.hp) and (norm(D.item) == "focussash" or norm(D.ability) == "sturdy"):
+                dmg = D.hp - 1
+                if norm(D.item) == "focussash" and norm(D.ability) != "sturdy":
+                    self._consume(st, D)
+            dmg = min(dmg, D.hp)
+            self.hp_change(st, o, D, -dmg, mv["name"])
+            st.last_hit[o] = dmg
+            st.last_cat[o] = mv["category"]
+            D.hurt_turn = st.turn
+            D.last_attacker = (st.turn, st.sides[i].active)
+            D.times_attacked += 1
+            total += dmg
+            landed += 1
+            self._say(st, f"  {D.name} -{dmg} ({D.hp}/{D.maxhp})")
+            if mv["drain"] and A.alive and dmg:
+                heal = max(1, math.floor(dmg * _frac(mv["drain"] / 100) + 0.5))
+                if norm(D.ability) == "liquidooze":
+                    self.hp_change(st, i, A, -heal, "해감액")
+                else:
+                    if norm(A.item) == "bigroot":
+                        heal = math.floor(heal * 1.3)
+                    self.hp_change(st, i, A, heal, "흡수")
+            if berry_used and D.item:
+                D.item = ""
+                berry_used = False
+            self._on_hit(st, i, o, eff_mv, rng, dmg, hp_before, crit)
+        if not landed:
+            return
+        self._landed = True
+        if late_item and D.alive:
+            for src, r in self.rows(D, "on_hit_taken"):
+                if src == "item" and D.item and self._cond_ok(r["cond"], st, o, D, mv):
+                    self.apply_row(st, "item:" + r["label"].split(":", 1)[1], r, o, D, rng, mv, 0, i)
+        self._primary_self_effects(st, i, mv, rng)
+        if mv["recoil"] and A.alive and total and norm(A.ability) not in ("rockhead", "magicguard"):
+            self.hp_change(st, i, A, -max(1, math.floor(total * _frac(mv["recoil"] / 100) + 0.5)), "반동")
+        if A.alive and landed:
+            self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o)
+        if not hit_sub:
+            self._secondary(st, i, o, mv, rng)
+            if key == "knockoff" and D.item and norm(D.ability) != "stickyhold" and not (
+                    any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
+                D.item = ""
+        if D.alive:
+            if not hit_sub:
+                for e in mv["effects"]:
+                    if e["trigger_type"] == "primary" and e["applies_to"] == "target" and e["kind"] == "volatile":
+                        self._apply_effect(st, i, o, e, rng)
+                if key == "clearsmog":
+                    D.boosts = {}
+        else:
+            self._on_faint(st, i, o, mv, rng, total)
+            if "destinybond" in D.vol and A.alive:
+                self.hp_change(st, i, A, -A.hp, "길동무")
+        if mv["self_destruct"] and A.alive:
+            self.hp_change(st, i, A, -A.hp, "자폭")
+        if "recharge" in mv["flags"]:
+            A.recharge = True
+        for r in mv["rules"]:
+            if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and A.alive:
+                self.hp_change(st, i, A, -math.floor(A.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
+            elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard" and not hit_sub:
+                self._side_condition(st, o, {"stealth_rock": "stealthrock"}.get(r["params"]["hazard"], r["params"]["hazard"]), swap=True)
+        pend, self._pending = self._pending, []
+        for fn in pend:
+            fn()
+        if mv["self_switch"] and A.alive and st.winner is None:
+            cand = [j for j in st.sides[i].alive_idx() if j != st.sides[i].active]
+            if cand:
+                j = switch_policy(st, i) if switch_policy else cand[0]
+                if j not in cand:
+                    j = cand[0]
+                self._switch_in(st, i, rng, to=j)
+        elif mv["force_switch"] and D.alive and not hit_sub and D.sub == 0 and norm(D.ability) != "suctioncups":
+            cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
+            if cand:
+                self._switch_in(st, o, rng, to=rng.choice(cand))
+
+    @staticmethod
+    def _gem_flag(A, mv):
+        if A.item and norm(A.item).endswith("gem") and mv["category"] != "status" and mv["type"] == A.item[:-4].strip():
+            return {"gem"}
+        return set()
+
+    def _on_hit(self, st, i, o, mv, rng, dmg, hp_before, crit):
+        """피격 후 처리: 방어자의 on_hit_taken / on_damage_taken_hp / (급소) on_crit_taken"""
+        D = st.sides[o].mon
+        if not dmg:
+            return
+        if norm(D.item) == "airballoon":
+            D.item = ""
+        self.run_hook(st, o, D, "on_hit_taken", rng, mv=mv, dmg=dmg, foe_side=i)
+        if D.alive:
+            self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=mv, dmg=dmg, hp_before=hp_before, foe_side=i)
+            if crit:
+                self.run_hook(st, o, D, "on_crit_taken", rng, mv=mv, dmg=dmg, foe_side=i)
+
+    def _on_faint(self, st, i, o, mv, rng, dmg):
+        A, D = st.sides[i].mon, st.sides[o].mon
+        self.run_hook(st, o, D, "on_faint", rng, mv=mv, dmg=dmg, foe_side=i)
+        if A.alive:
+            self.run_hook(st, i, A, "on_ko", rng, mv=mv, dmg=dmg, foe_side=o)
+
+    def _contact_punish(self, st, i, o, mv, rng):
+        if "contact" not in mv["flags"]:
+            return
+        A = st.sides[i].mon
+        D = st.sides[o].mon
+        for k in list(D.vol):
+            if k in CONTACT_PUNISH:
+                kind, v = CONTACT_PUNISH[k]
+                if kind == "dmg":
+                    self.hp_change(st, i, A, -max(1, math.floor(A.maxhp * v)), k)
+                elif kind == "status":
+                    self.try_status(st, i, A, v, rng, src_side=o)
+                else:
+                    self.change_boost(st, i, A, v[0], v[1], src_side=o)
+
+    # ───────────────────────── 부가효과 ─────────────────────────
+    def _secondary(self, st, i, o, mv, rng):
+        A, D = st.sides[i].mon, st.sides[o].mon
+        if norm(A.ability) == "sheerforce":
+            return
+        mult = 2 if norm(A.ability) == "serenegrace" else 1
+        for e in mv["effects"]:
+            if e["trigger_type"] != "secondary":
+                continue
+            if e["applies_to"] == "target":
+                if not D.alive or norm(D.ability) == "shielddust" or norm(D.item) == "covertcloak":
+                    continue
+            elif not A.alive:
+                continue
+            if rng.random() * 100 >= (e["chance_pct"] or 100) * mult:
+                continue
+            self._apply_effect(st, i, o, e, rng)
+
+    def _primary_self_effects(self, st, i, mv, rng):
+        A = st.sides[i].mon
+        for e in mv["effects"]:
+            if e["trigger_type"] == "primary" and e["applies_to"] == "self":
+                if e["kind"] == "stat_stage" and A.alive:
+                    self.change_boost(st, i, A, e["code"], e["stages"] or 0)
+                elif e["kind"] == "volatile" and e["code"] == "mustrecharge":
+                    A.recharge = True
+                elif e["kind"] == "volatile" and e["code"] == "glaiverush":
+                    A.vol.add("glaiverush")
+
+    def _apply_effect(self, st, i, o, e, rng):
+        tgt_side = o if e["applies_to"] == "target" else i
+        tgt = st.sides[tgt_side].mon
+        k, code = e["kind"], e["code"]
+        if k == "status":
+            if code.startswith("random("):
+                code = rng.choice(code[7:-1].split("|"))
+            self.try_status(st, tgt_side, tgt, code, rng, src_side=i)
+        elif k == "stat_stage":
+            self.change_boost(st, tgt_side, tgt, code, e["stages"] or 0, src_side=(i if tgt_side != i else None))
+        elif k == "volatile":
+            if code == "flinch":
+                if not tgt.moved and norm(tgt.ability) != "innerfocus":
+                    tgt.vol.add("flinch")
+            elif code == "confusion":
+                if norm(tgt.ability) != "owntempo" and "confusion" not in tgt.vol:
+                    tgt.vol.add("confusion")
+                    tgt.confusion = rng.randint(2, 5)
+            elif code == "leechseed":
+                if "Grass" not in tgt.types:
+                    tgt.vol.add("leechseed")
+                    tgt.leech_to = i
+            elif code == "focusenergy":
+                tgt.vol.add("focusenergy")
+            elif code == "taunt":
+                immune = any((r["code"] or "").startswith("volatile:") and "taunt" in r["code"]
+                             for r in self.data.ability_fx.get(norm(tgt.ability), []) if r["hook"] == "immunity")
+                if tgt.taunt == 0 and not immune:
+                    tgt.taunt = 3 + (1 if tgt.active_turns and tgt.moved else 0)
+            elif code == "healblock":
+                tgt.healblock = 5 if e["trigger_type"] == "primary" else 2
+            elif code == "destinybond":
+                tgt.vol.add("destinybond")
+            elif code == "stockpile":
+                if tgt.stockpile < 3:
+                    tgt.stockpile += 1
+                    self.change_boost(st, tgt_side, tgt, "def", 1)
+                    self.change_boost(st, tgt_side, tgt, "spd", 1)
+            elif code == "partiallytrapped":
+                if not tgt.trap and tgt.sub == 0:
+                    tgt.trap = 7 if norm(st.sides[i].mon.item) == "gripclaw" else rng.choice([4, 5])
+                    tgt.vol.add("bindband" if norm(st.sides[i].mon.item) == "bindingband" else "bind")
+            elif code not in PROTECT_MOVES:
+                self._unsup("volatile:" + code)
+        else:
+            self._unsup(f"{k}:{code}")
+
+    def _status_move(self, st, i, mv, rng, bounced=False):
+        A, D = st.sides[i].mon, st.sides[1 - i].mon
+        o = 1 - i
+        key = norm(mv["name"])
+        if key == "endure":
+            if rng.random() < 1 / (3 ** min(A.protect_n, 5)):
+                A.vol.add("enduring")
+                A.protect_n += 1
+            else:
+                A.protect_n = 0
+            return
+        if key in PROTECT_MOVES or any(e["kind"] == "volatile" and e["code"] in PROTECT_MOVES for e in mv["effects"]):
+            if rng.random() < 1 / (3 ** min(A.protect_n, 5)):
+                A.vol.add("protecting")
+                for e in mv["effects"]:
+                    if e["code"] in CONTACT_PUNISH:
+                        A.vol.add(e["code"])
+                A.protect_n += 1
+            else:
+                A.protect_n = 0
+            return
+        tself = mv["target"] in NON_FOE_TARGETS
+        if "reflectable" in mv["flags"] and norm(D.ability) == "magicbounce" and not bounced and mv["target"] in ("normal", "foeSide"):
+            self._say(st, "  반사")
+            self._status_move(st, o, mv, rng, bounced=True)
+            return
+        if not tself:
+            if "powder" in mv["flags"] and ("Grass" in D.types or norm(D.ability) == "overcoat" or norm(D.item) == "safetygoggles"):
+                return
+            if norm(A.ability) == "prankster" and "Dark" in D.types:
+                return
+            if D.sub > 0 and "bypasssub" not in mv["flags"] and norm(A.ability) != "infiltrator":
+                return
+            if not self._hits(st, i, o, mv, rng, False):
+                self._say(st, "  빗나감")
+                return
+        handled = False
+        if key == "substitute":
+            cost = A.maxhp // 4
+            if A.sub == 0 and A.hp > cost:
+                self.hp_change(st, i, A, -cost, "대타출동")
+                A.sub = cost
+            return
+        if key == "curse":
+            if "Ghost" in A.types:
+                if D.sub == 0 and "curse" not in D.vol and A.hp > 1:
+                    self.hp_change(st, i, A, -(A.maxhp // 2), "저주")
+                    D.vol.add("curse")
+            else:
+                self.change_boost(st, i, A, "spe", -1)
+                self.change_boost(st, i, A, "atk", 1)
+                self.change_boost(st, i, A, "def", 1)
+            return
+        if key == "memento":
+            if D.sub == 0:
+                self.change_boost(st, o, D, "atk", -2, src_side=i)
+                self.change_boost(st, o, D, "spa", -2, src_side=i)
+            self.hp_change(st, i, A, -A.hp, "메멘토")
+            return
+        if key == "yawn":
+            if D.sub == 0 and not D.yawn and not D.status and not (st.terrain in ("electric", "misty") and self._grounded(D)):
+                if not any(r["hook"] == "immunity" and (r["code"] or "").startswith("status:slp") for r in self.data.ability_fx.get(norm(D.ability), [])):
+                    D.yawn = 2
+            return
+        if key == "encore":
+            if D.sub == 0 and not D.encore and D.last_move and D.last_move not in ("encore",) and \
+                    "failencore" not in self.data.moves[D.last_move]["flags"]:
+                D.encore = 3
+            return
+        if key == "haze":
+            A.boosts, D.boosts = {}, {}
+            return
+        if key == "bellydrum":
+            if A.hp > A.maxhp // 2 and A.boosts.get("atk", 0) < 6:
+                self.hp_change(st, i, A, -(A.maxhp // 2), "배북")
+                A.boosts["atk"] = 6
+            return
+        if key in ("trick", "switcheroo"):
+            def locked(m):
+                return bool(m.item) and any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(m.item), [])) and "mega" in m.sid
+            if norm(D.ability) != "stickyhold" and (A.item or D.item) and not locked(A) and not locked(D) and D.sub == 0:
+                A.item, D.item = D.item, A.item
+            return
+        if key == "painsplit":
+            if D.sub == 0:
+                avg = (A.hp + D.hp) // 2
+                A.hp, D.hp = min(A.maxhp, avg), min(D.maxhp, avg)
+            return
+        if key == "defog":
+            if D.sub == 0:
+                self.change_boost(st, o, D, "evasion", -1, src_side=i)
+            for sd in (st.sides[o], st.sides[i]):
+                for h in ("spikes", "toxicspikes", "stealthrock", "stickyweb"):
+                    sd.hazards.pop(h, None)
+            for k in ("reflect", "light_screen", "aurora_veil", "safeguard"):
+                st.sides[o].screens.pop(k, None)
+            st.terrain = None
+            return
+        if key == "partingshot":
+            before = (D.boosts.get("atk", 0), D.boosts.get("spa", 0))
+            self.change_boost(st, o, D, "atk", -1, src_side=i)
+            self.change_boost(st, o, D, "spa", -1, src_side=i)
+            if (D.boosts.get("atk", 0), D.boosts.get("spa", 0)) != before or norm(D.ability) == "mirrorarmor":
+                self._self_switch(st, i, rng, False)
+            return
+        if key == "wish":
+            if st.sides[i].wish is None:
+                st.sides[i].wish = [2, max(1, A.maxhp // 2)]
+            return
+        if key in ("healingwish", "lunardance"):
+            if len(st.sides[i].alive_idx()) > 1:
+                self.hp_change(st, i, A, -A.hp, key)
+                st.sides[i].heal_next = key
+            return
+        if mv["force_switch"]:
+            cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
+            if cand and norm(D.ability) not in ("suctioncups",) and D.sub == 0:
+                self._switch_in(st, o, rng, to=rng.choice(cand))
+            return
+        for e in mv["effects"]:
+            if e["trigger_type"] != "primary":
+                continue
+            handled = True
+            if (e["chance_pct"] or 100) < 100 and rng.random() * 100 >= e["chance_pct"]:
+                continue
+            kind = e["kind"]
+            if kind == "weather":
+                w = {"sunnyday": "sun", "raindance": "rain", "sandstorm": "sand", "snowscape": "snow", "hail": "snow"}.get(e["code"].lower())
+                if w and st.weather != w:
+                    self._set_weather(st, w, A)
+            elif kind == "terrain":
+                t = e["code"].replace("terrain", "")
+                if st.terrain != t:
+                    st.terrain = t
+                    st.terrain_turns = 8 if any(r["code"] == "extend_terrain" for r in self.data.item_fx.get(norm(A.item), [])) else 5
+            elif kind == "side_condition":
+                self._side_condition(st, i, e["code"])
+            elif kind in ("status", "stat_stage", "volatile"):
+                if kind == "volatile" and e["code"] in PROTECT_MOVES:
+                    continue
+                if e["applies_to"] == "self" and kind == "stat_stage":
+                    self.change_boost(st, i, A, e["code"], e["stages"] or 0)
+                elif e["applies_to"] == "self" and kind == "volatile":
+                    if e["code"] == "focusenergy":
+                        A.vol.add("focusenergy")
+                    elif e["code"] in ("stockpile", "destinybond"):
+                        self._apply_effect(st, i, i, dict(e, applies_to="self"), rng)
+                    elif e["code"] not in ("roost", "protect"):
+                        self._unsup("volatile:" + e["code"])
+                elif not (kind == "status" and "substitute" in D.vol):
+                    self._apply_effect(st, i, o, e, rng)
+            else:
+                self._unsup(f"{kind}:{e['code']}")
+        table = next((r["params"]["table"] for r in mv["rules"] if r["type"] == "heal_move" and "table" in r["params"]), None)
+        if (mv["heal"] or table) and A.alive:
+            frac = mv["heal"] / 100
+            if table:
+                w_ = "sun" if any(r["code"] == "treat_weather_as:sun" for r in self.data.ability_fx.get(norm(A.ability), [])) else st.weather
+                frac = table.get(w_ or "default", table["default"])
+                if abs(frac - 0.667) < 1e-3:
+                    frac = 2 / 3
+            self.hp_change(st, i, A, math.floor(A.maxhp * frac), "회복")
+        for r in mv["rules"]:
+            if r["type"] == "extra_effect" and r["params"].get("effect") == "full_heal_and_sleep":
+                sleepless = norm(A.ability) in ("insomnia", "vitalspirit", "sweetveil") or (
+                    st.terrain in ("electric", "misty") and self._grounded(A))
+                if A.status != "slp" and A.hp < A.maxhp and not sleepless:
+                    A.hp, A.status, A.sleep = A.maxhp, "slp", 2
+                    self._status_item_cure(st, A, "slp")
+                handled = True
+        if key == "shedtail":
+            cost = A.maxhp // 2
+            if A.hp > cost and len(st.sides[i].alive_idx()) > 1 and A.sub == 0:
+                self.hp_change(st, i, A, -cost, "꼬리자르기")
+                A.sub = A.maxhp // 4
+                self._self_switch(st, i, rng, True)
+            return
+        if mv["self_switch"] and A.alive and key not in ("partingshot", "revivalblessing"):
+            self._self_switch(st, i, rng, key == "batonpass")
+        if not handled and not mv["heal"] and not table and not mv["self_switch"] and not any(r["type"] in ("extra_effect", "heal_move") for r in mv["rules"]):
+            self._unsup("move:" + mv["name"])
+
+    def _self_switch(self, st, i, rng, carry):
+        cand = [j for j in st.sides[i].alive_idx() if j != st.sides[i].active]
+        if not cand or st.winner is not None:
+            return
+        j = self._policy(st, i) if self._policy else cand[0]
+        self._switch_in(st, i, rng, to=j if j in cand else cand[0], carry=carry)
+
+    def _side_condition(self, st, i, code, swap=False):
+        """swap=True 면 i 가 '해저드를 받는 쪽'(기술 사용자의 상대)"""
+        S, T = (st.sides[1 - i], st.sides[i]) if swap else (st.sides[i], st.sides[1 - i])
+        if code in ("reflect", "lightscreen", "auroraveil"):
+            k = {"reflect": "reflect", "lightscreen": "light_screen", "auroraveil": "aurora_veil"}[code]
+            if S.screens.get(k, 0) <= 0:
+                S.screens[k] = 8 if norm(S.mon.item) == "lightclay" else 5
+        elif code == "tailwind":
+            S.screens["tailwind"] = 4
+        elif code == "stealthrock":
+            T.hazards["stealthrock"] = 1
+        elif code == "spikes":
+            T.hazards["spikes"] = min(3, T.hazards.get("spikes", 0) + 1)
+        elif code == "toxicspikes":
+            T.hazards["toxicspikes"] = min(2, T.hazards.get("toxicspikes", 0) + 1)
+        elif code == "stickyweb":
+            T.hazards["stickyweb"] = 1
+        elif code == "safeguard":
+            S.screens["safeguard"] = 5
+        else:
+            self._unsup("side_condition:" + code)
+
+    # ───────────────────────── 턴 종료 ─────────────────────────
+    def _end_of_turn(self, st, rng):
+        order = sorted((0, 1), key=lambda i: (-self.speed_of(st, i), rng.random()))
+        if st.weather:
+            st.weather_turns -= 1
+            if st.weather_turns <= 0:
+                st.weather = None
+        for i in order:
+            bm = st.sides[i].mon
+            if not bm.alive:
+                continue
+            if st.weather == "sand" and not any(t in ("Rock", "Ground", "Steel") for t in bm.types) and \
+                    norm(bm.ability) not in ("magicguard", "overcoat", "sandveil", "sandrush", "sandforce") and norm(bm.item) != "safetygoggles":
+                self.hp_change(st, i, bm, -max(1, bm.maxhp // 16), "모래바람")
+            if st.terrain == "grassy" and bm.alive and self._grounded(bm):
+                self.hp_change(st, i, bm, max(1, bm.maxhp // 16), "그래스필드")
+            if bm.alive:
+                for src, r in self.rows(bm, "turn_end"):
+                    if not self._cond_ok(r["cond"], st, i, bm):
+                        continue
+                    if r["label"].endswith("Speed Boost") and bm.active_turns == 0:
+                        continue
+                    if r["kind"] in ("heal_frac", "damage_frac", "cure_status", "stat_stage"):
+                        self.apply_row(st, r["label"], r, i, bm, rng)
+                        if not bm.alive:
+                            break
+            if bm.alive and norm(bm.item) == "blacksludge":
+                self.hp_change(st, i, bm, max(1, bm.maxhp // 16) if "Poison" in bm.types else -max(1, bm.maxhp // 8), "검은진흙")
+            if bm.alive and "leechseed" in bm.vol and norm(bm.ability) != "magicguard":
+                d = max(1, bm.maxhp // 8)
+                self.hp_change(st, i, bm, -d, "씨뿌리기")
+                src = st.sides[1 - i].mon
+                if src.alive:
+                    self.hp_change(st, 1 - i, src, d, "씨뿌리기 흡수")
+            if bm.alive and bm.status in ("psn", "tox", "brn") and norm(bm.ability) != "magicguard":
+                if bm.status == "psn" and norm(bm.ability) != "poisonheal":
+                    self.hp_change(st, i, bm, -max(1, bm.maxhp // 8), "독")
+                elif bm.status == "tox":
+                    if norm(bm.ability) != "poisonheal":
+                        self.hp_change(st, i, bm, -max(1, bm.maxhp // 16) * bm.tox, "맹독")
+                    bm.tox = min(15, bm.tox + 1)
+                elif bm.status == "brn":
+                    self.hp_change(st, i, bm, -max(1, bm.maxhp // (32 if norm(bm.ability) == "heatproof" else 16)), "화상")
+            if bm.taunt:
+                bm.taunt -= 1
+            if bm.healblock:
+                bm.healblock -= 1
+            if bm.encore:
+                bm.encore -= 1
+            if bm.yawn:
+                bm.yawn -= 1
+                if bm.yawn == 0 and bm.alive:
+                    self.try_status(st, i, bm, "slp", rng)
+            if bm.alive and "curse" in bm.vol and norm(bm.ability) != "magicguard":
+                self.hp_change(st, i, bm, -max(1, bm.maxhp // 4), "저주")
+            if bm.alive and bm.trap:
+                bm.trap -= 1
+                if bm.trap <= 0:
+                    bm.vol.discard("bind"); bm.vol.discard("bindband")
+                elif norm(bm.ability) != "magicguard":
+                    self.hp_change(st, i, bm, -max(1, math.floor(bm.maxhp * (1 / 6 if "bindband" in bm.vol else 1 / 8))), "속박")
+            if bm.alive:
+                self.run_hook(st, i, bm, "on_damage_taken_hp", rng)
+            if bm.alive and norm(bm.item) in ("toxicorb", "flameorb") and not bm.status:
+                self.try_status(st, i, bm, "tox" if norm(bm.item) == "toxicorb" else "brn", rng, src_side=i)
+        for i in (0, 1):
+            S = st.sides[i]
+            if S.wish:
+                S.wish[0] -= 1
+                if S.wish[0] <= 0:
+                    if S.mon.alive:
+                        self.hp_change(st, i, S.mon, S.wish[1], "희망사항")
+                    S.wish = None
+            for k in list(S.screens):
+                S.screens[k] -= 1
+                if S.screens[k] <= 0:
+                    del S.screens[k]
+        if st.terrain:
+            st.terrain_turns -= 1
+            if st.terrain_turns <= 0:
+                st.terrain = None
+
+    # ───────────────────────── 편의 ─────────────────────────
+    def clone(self, st):
+        c = copy.deepcopy(st)
+        c.log = None
+        return c

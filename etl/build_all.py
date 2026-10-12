@@ -25,8 +25,8 @@ if os.path.isdir(SHOW):   # Showdown 정답 덤프 생성 (없으면 건너뜀)
     print(("OK   " if r.returncode == 0 else "FAIL ") + "sd_dump.js")
     if r.returncode:
         print(r.stderr[-500:]); sys.exit(1)
-for s in ["load.py", "load_items_extra.py", "load_za_moves.py", "load_type_chart.py", "load_type_immunity.py", "load_champions_legal.py",
-          "load_move_effects.py", "load_champions_move_changes.py", "apply_sd_champion_overrides.py", "load_move_rules.py", "load_battle_rules.py", "manual_fixes.py",
+for s in ["load.py", "load_items_extra.py", "load_za_moves.py", "load_type_chart.py", "load_type_immunity.py", "load_champions_legal.py", "load_pokemon_weight.py",
+          "load_move_effects.py", "load_champions_move_changes.py", "apply_sd_champion_overrides.py", "load_move_rules.py", "load_battle_rules.py", "load_names_ja.py", "manual_fixes.py",
           "load_ability_effects.py", "load_item_effects.py", "load_move_immunities.py", "load_move_interaction.py", "load_battle_states.py", "load_battle_rules_global.py", "load_battle_phases.py"]:
     if s == "load_za_moves.py":      # ZA 습득 기술: pokemondb 크롤링 결과가 없으면 먼저 수집 (Crawl-delay 2초 준수, 약 15분)
         cz = os.path.join(here, "cache_za")
@@ -36,4 +36,6 @@ for s in ["load.py", "load_items_extra.py", "load_za_moves.py", "load_type_chart
     print(("OK   " if r.returncode == 0 else "FAIL ") + s)
     if r.returncode:
         print(r.stderr[-800:]); sys.exit(1)
+if os.environ.get("SKIP_META") != "1":      # 메타 통계(Smogon): 캐시가 없으면 내려받는다(수십 MB). 건너뛰려면 SKIP_META=1
+    run("collect_meta_smogon.py")
 print("build done ->", db)

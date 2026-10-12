@@ -37,6 +37,7 @@ for (const m of dex.moves.all()) {
     secondaries: m.secondaries ? m.secondaries.map(s => ({chance: s.chance, status: s.status || null, volatileStatus: s.volatileStatus || null, boosts: s.boosts || null})) : null,
     boosts: m.boosts || null, selfBoosts: m.self && m.self.boosts ? m.self.boosts : null,
     status: m.status || null, volatileStatus: m.volatileStatus || null,
+    hasSecondary: !!((m.secondaries && m.secondaries.length) || m.secondary),
     selfVolatile: m.self && m.self.volatileStatus ? m.self.volatileStatus : null,
     base: (() => { const b = gen9.moves.get(m.id); return b.exists ? {basePower: b.basePower, accuracy: b.accuracy, pp: b.pp, type: b.type, category: b.category, priority: b.priority, target: b.target, flags: Object.keys(b.flags || {}).sort()} : null; })(),
     selfSwitch: m.selfSwitch || null, ohko: m.ohko || null, weather: m.weather || null, terrain: m.terrain || null,
@@ -51,7 +52,7 @@ for (const sp of legalSpecies) {
     if (!problem) moves.push(m.id);
   }
   data.species[sp.id] = {
-    name: sp.name, num: sp.num, types: sp.types, baseStats: sp.baseStats, abilities: sp.abilities,
+    name: sp.name, weightkg: sp.weightkg, num: sp.num, types: sp.types, baseStats: sp.baseStats, abilities: sp.abilities,
     tier: sp.tier, baseSpecies: sp.baseSpecies, forme: sp.forme || null, requiredItem: sp.requiredItem || null, learnset: moves,
   };
 }

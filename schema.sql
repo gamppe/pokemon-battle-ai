@@ -40,6 +40,8 @@ CREATE TABLE pokemon (
   base_spd    TINYINT UNSIGNED NOT NULL,
   base_spe    TINYINT UNSIGNED NOT NULL,
   base_total  SMALLINT UNSIGNED AS (base_hp+base_atk+base_def+base_spa+base_spd+base_spe) STORED,
+  showdown_id VARCHAR(40) NULL,                  -- Showdown 종 id (챔피언스 허용 포켓몬만)
+  weight_kg   DECIMAL(6,1) NULL,                 -- 몸무게(kg). 안다리걸기/풀묶기/헤비봄버/히트스탬프 위력 계산용
   UNIQUE KEY uq_dex_form (dex_no, form_name),
   KEY idx_name_ko (name_ko),
   KEY idx_name_en (name_en),
@@ -106,7 +108,7 @@ CREATE TABLE move_effect (
   move_id      SMALLINT UNSIGNED NOT NULL,
   trigger_type ENUM('primary','secondary') NOT NULL,
   applies_to   ENUM('target','self','field','side') NOT NULL,
-  kind         ENUM('status','volatile','stat_stage','weather','terrain','pseudo_weather','side_condition','slot_condition') NOT NULL,
+  kind         ENUM('status','volatile','stat_stage','weather','terrain','pseudo_weather','side_condition','slot_condition','special') NOT NULL,
   code         VARCHAR(30) NOT NULL,
   stages       TINYINT NULL,
   chance_pct   TINYINT UNSIGNED NOT NULL DEFAULT 100,
@@ -340,3 +342,14 @@ CREATE TABLE move_interaction (
   magic_bounce BOOL NOT NULL, powder BOOL NOT NULL, sound BOOL NOT NULL, note VARCHAR(200) NULL,
   FOREIGN KEY (move_id) REFERENCES move(move_id)
 );
+
+-- 일본어 이름 (etl/load_names_ja.py가 컬럼을 추가하고 PokeAPI 'ja' 이름으로 채움; 신규 항목은 manual_fixes.py)
+-- ALTER TABLE pokemon ADD COLUMN name_ja VARCHAR(60) NULL, ADD COLUMN form_name_ja VARCHAR(60) NULL;
+-- ALTER TABLE move    ADD COLUMN name_ja VARCHAR(60) NULL;
+-- ALTER TABLE ability ADD COLUMN name_ja VARCHAR(60) NULL;
+-- ALTER TABLE item    ADD COLUMN name_ja VARCHAR(60) NULL;
+-- ALTER TABLE type    ADD COLUMN name_ja VARCHAR(30) NULL;
+-- ALTER TABLE nature  ADD COLUMN name_ja VARCHAR(30) NULL;
+
+-- 메타 통계(etl/collect_meta_smogon.py가 테이블을 만들고 채움): meta_snapshot(출처/포맷/레이팅 컷오프/월), meta_pokemon(사용률),
+-- meta_ability / meta_item / meta_move (weight=가중 횟수, prob=세트 수 대비 확률), meta_spread(성격+SP 배분), meta_teammate, meta_counter

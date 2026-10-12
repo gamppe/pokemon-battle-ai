@@ -29,6 +29,8 @@ KNOWN_FALSE = {
     "direclaw": "확률 상태이상이 데이터가 아니라 코드(onHit)로 구현됨(무작위 독/마비/잠듦 30%)",
     "curse": "챔피언스는 volatileStatus 대신 onHit 코드로 구현했지만 효과는 같음",
 }
+for _m in ("triattack", "spiritshackle", "throatchop", "burningjealousy", "alluringvoice"):
+    KNOWN_FALSE[_m] = "확률 부가효과가 onHit 코드로 구현돼 덤프에 내용이 없음(소스를 읽고 수동 반영, etl/load_move_effects.py)"
 IGNORE_DB_ONLY_SPECIES = {"aegislashblade", "castformrainy", "castformsnowy", "castformsunny"}      # 전투 중 폼(선택 불가)
 IGNORE_SD_ONLY_SPECIES = {"mausholdfour", "polteageistantique", "sinistchamasterpiece", "vivillonfancy", "vivillonpokeball"}  # 외형만 다른 폼
 IGNORE_ABILITIES = {"battlebond"}   # 개구리의 폼 전용(선택 불가 폼)
@@ -85,7 +87,10 @@ for sid in common:
     da = ab.get(d["pid"], {})
     if {k: norm(v) for k, v in da.items()} != {k: norm(v) for k, v in sa.items()}:
         diffs_a.append((sid, da, sa))
-report("종족값", diffs_s, len(common)); report("타입", diffs_t, len(common)); report("특성 슬롯", diffs_a, len(common))
+cur.execute("select p.showdown_id, p.weight_kg from pokemon p join game_pokemon gp using(pokemon_id) where gp.game_id=%s", (CG,))
+dbw = {r[0]: float(r[1]) if r[1] is not None else None for r in cur.fetchall()}
+diffs_w = [(sid, dbw.get(sid), sd["species"][sid].get("weightkg")) for sid in common if dbw.get(sid) != sd["species"][sid].get("weightkg")]
+report("몸무게", diffs_w, len(common)); report("종족값", diffs_s, len(common)); report("타입", diffs_t, len(common)); report("특성 슬롯", diffs_a, len(common))
 
 # ───── 3. 습득 기술 ─────
 cur.execute("select pm.pokemon_id, m.name_en from pokemon_move pm join move m using(move_id) where pm.game_id=%s", (CG,))
@@ -191,6 +196,12 @@ for n, d in dbm.items():
     if got != exp and n not in KNOWN_FALSE:
         d_eff.append((n, f"DB만 {sorted(got - exp)[:3]}", f"SD만 {sorted(exp - got)[:3]}"))
 report("기술 부가효과(상태/능력 변화/확률)", d_eff, len(dbm))
+# 부가효과 '보유 여부' (천부적 폭력 등 부가효과가 있는 기술 판정에 쓰임)
+cur.execute("select distinct move_id, game_id from move_effect where trigger_type='secondary' and game_id in (0,%s)", (CG,))
+has_sec = {mid for mid, gid in cur.fetchall() if gid == (CG if mid in ovr_moves else 0)}
+d_has = [(n, "DB 없음/SD 있음" if smoves[n]["hasSecondary"] else "DB 있음/SD 없음") for n, d in dbm.items()
+         if n in smoves and (d["mid"] in has_sec) != bool(smoves[n]["hasSecondary"])]
+report("부가효과 보유 여부", d_has, len(dbm))
 print("   (오탐으로 제외:", ", ".join(f"{k}={v}" for k, v in KNOWN_FALSE.items()), ")")
 
 # ───── 6. 아이템 / 특성 / 상성 / 성격 ─────

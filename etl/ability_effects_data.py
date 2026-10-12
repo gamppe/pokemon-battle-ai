@@ -45,7 +45,8 @@ def absorb_stat(t, stat, n=1):
 
 
 def convert(t, bp=1.2):
-    return [R("modify_move_type", "special", code=f"Normal>{t}", note="Normal 기술이 타입 변환"),
+    return [R("modify_move_type", "special", code=f"Normal>{t}", note="Normal 기술이 타입 변환 (일부 기술은 제외)",
+              excluded="Judgment|Multi-Attack|Natural Gift|Revelation Dance|Techno Blast|Terrain Pulse|Weather Ball"),
             R("modify_bp", "mult", bp, converted_move=True)]
 
 
@@ -114,14 +115,15 @@ ABILITIES = {
     "Rain Dish": [ds(0.0625, "rain")],
     "Sand Stream": [R("switch_in", "set_weather", 5, code="sand")],
     "Pressure": [R("passive", "special", code="extra_pp_cost", value=1)],
-    "Thick Fat": [R("modify_dmg_taken", "mult", 0.5, move_type="Fire"), R("modify_dmg_taken", "mult", 0.5, move_type="Ice")],
+    "Thick Fat": [R("modify_atk_foe", "mult", 0.5, move_type="Fire", note="상대의 공격 스탯이 절반"),
+                  R("modify_atk_foe", "mult", 0.5, move_type="Ice", note="상대의 공격 스탯이 절반")],
     "Early Bird": [R("passive", "special", code="sleep_counter_x2")],
     "Flame Body": [contact_status("brn")],
     "Run Away": [R("passive", "none", note="배틀 효과 없음")],
     "Keen Eye": keen_eye(),
     "Hyper Cutter": [stat_lock("atk")],
     "Pickup": [R("turn_end", "special", code="pickup_item")],
-    "Hustle": [R("modify_atk", "mult", 1.5, move_category="physical"), R("modify_acc", "mult", 0.8, move_category="physical")],
+    "Hustle": [R("modify_atk", "mult", 1.5, move_category="physical", direct=True, note="연쇄 곱이 아니라 공격 스탯에 즉시 곱함"), R("modify_acc", "mult", 0.8, move_category="physical")],
     "Cute Charm": [R("on_hit_taken", "volatile", code="attract", target="attacker", chance=30, contact=True, opposite_gender=True)],
     "Plus": [R("modify_atk", "mult", 1.5, move_category="special", ally_ability="Plus|Minus", note="더블에서만")],
     "Minus": [R("modify_atk", "mult", 1.5, move_category="special", ally_ability="Plus|Minus", note="더블에서만")],
@@ -149,8 +151,8 @@ ABILITIES = {
     "Gluttony": [R("passive", "special", code="berry_threshold", value=0.5)],
     "Anger Point": [R("on_crit_taken", "stat_stage", 12, code="atk", target="self", note="최대(+6)까지")],
     "Unburden": [R("modify_spe", "mult", 2, item_lost=True)],
-    "Heatproof": [R("modify_dmg_taken", "mult", 0.5, move_type="Fire"), R("passive", "special", code="burn_damage_mult", value=0.5)],
-    "Dry Skin": [absorb("Water"), R("modify_dmg_taken", "mult", 1.25, move_type="Fire"),
+    "Heatproof": [R("modify_atk_foe", "mult", 0.5, move_type="Fire", note="상대의 공격 스탯이 절반"), R("passive", "special", code="burn_damage_mult", value=0.5)],
+    "Dry Skin": [absorb("Water"), R("modify_bp_foe", "mult", 1.25, move_type="Fire", note="상대 불꽃 기술 위력 x1.25"),
                  R("turn_end", "heal_frac", 0.125, target="self", weather="rain"),
                  R("turn_end", "damage_frac", 0.125, target="self", weather="sun")],
     "Iron Fist": [R("modify_bp", "mult", 1.2, move_flag="punch")],
@@ -245,7 +247,7 @@ ABILITIES = {
     "Emergency Exit": [R("on_damage_taken_hp", "special", code="switch_out", crosses_half_hp=True)],
     "Merciless": [R("modify_crit", "always_crit", target_status="psn|tox")],
     "Stakeout": [R("modify_atk", "mult", 2, target_switched_in=True)],
-    "Water Bubble": [R("modify_atk", "mult", 2, move_type="Water"), R("modify_dmg_taken", "mult", 0.5, move_type="Fire"), no_status("brn")],
+    "Water Bubble": [R("modify_atk", "mult", 2, move_type="Water"), R("modify_atk_foe", "mult", 0.5, move_type="Fire", note="상대의 공격 스탯이 절반"), no_status("brn")],
     "Berserk": [R("on_damage_taken_hp", "stat_stage", 1, code="spa", target="self", crosses_half_hp=True)],
     "Slush Rush": [weather_speed("snow")],
     "Long Reach": [R("passive", "special", code="no_contact")],
@@ -277,7 +279,7 @@ ABILITIES = {
     "Curious Medicine": [R("switch_in", "special", code="reset_ally_stat_stages", note="더블에서만")],
     "Seed Sower": [R("on_hit_taken", "set_terrain", 5, code="grassy")],
     "Thermal Exchange": [R("on_hit_taken", "stat_stage", 1, code="atk", target="self", move_type="Fire"), no_status("brn")],
-    "Purifying Salt": [R("immunity", "immune", code="status:any"), R("modify_dmg_taken", "mult", 0.5, move_type="Ghost")],
+    "Purifying Salt": [R("immunity", "immune", code="status:any"), R("modify_atk_foe", "mult", 0.5, move_type="Ghost", note="상대의 공격 스탯이 절반")],
     "Guard Dog": [R("immunity", "stat_stage", 1, code="atk", target="self", intimidated=True, note="위협 대신 공격 +1"),
                   R("immunity", "immune", code="forced_switch")],
     "Zero to Hero": [R("switch_out", "special", code="palafin_hero_form")],
@@ -297,7 +299,10 @@ ABILITIES = {
     "Hospitality": [R("switch_in", "heal_frac", 0.25, target="ally", note="더블에서만")],
     "Piercing Drill": [R("passive", "ignore", code="protect", contact=True), R("modify_dmg_dealt", "mult", 0.25, contact=True, target_protected=True)],
     "Dragonize": convert("Dragon"),
-    "Mega Sol": [R("passive", "special", code="treat_weather_as:sun", note="자신의 기술은 쾌청 상태로 취급")],
+    "Mega Sol": [R("passive", "special", code="treat_weather_as:sun", scope="field_sun_while_attacking",
+                       note="공격하는 동안 필드의 날씨를 쾌청으로 취급 (사용자 확인, Showdown 구현과 일치): 자신의 기술에 쾌청 효과"
+                            "(타입/위력/솔라빔/불꽃·물 보정)가 적용되고, 방어자의 모래바람 특방 보정·눈 방어 보정·비의 데미지 보정은 적용되지 않음. "
+                            "날씨 무효화 특성보다 우선")],
     "Spicy Spray": [R("on_hit_taken", "status", code="brn", target="attacker")],
     "Eelevate": [R("immunity", "immune", code="type:Ground"), R("passive", "immune", code="ground_hazards"),
                  R("on_ko", "stat_stage", 1, code="highest_stat", target="self")],

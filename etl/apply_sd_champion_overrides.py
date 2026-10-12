@@ -29,6 +29,11 @@ try:
 except pymysql.err.OperationalError as e:
     if e.args[0] != 1060:
         raise
+try:
+    cur.execute("ALTER TABLE pokemon ADD COLUMN showdown_id VARCHAR(40) NULL")
+except pymysql.err.OperationalError as e:
+    if e.args[0] != 1060:
+        raise
 cur.execute("select game_id from game where code='CHAMPIONS'")
 CG = cur.fetchone()[0]
 cur.execute("select type_id, name_en from type")
@@ -99,6 +104,10 @@ pid_of = {}
 for pid in ids:
     n = norm(get(f"pokemon/{pid}")["name"])
     pid_of[REV.get(n, n)] = pid
+for sid, pid in pid_of.items():
+    cur.execute("update pokemon set showdown_id=%s where pokemon_id=%s", (sid, pid))
+    if sid in sd["species"] and sd["species"][sid].get("weightkg") is not None:      # 챔피언스 포켓몬 몸무게는 Showdown 값
+        cur.execute("update pokemon set weight_kg=%s where pokemon_id=%s", (sd["species"][sid]["weightkg"], pid))
 cur.execute("select move_id, name_en from move")
 mv = {norm(n): i for i, n in cur.fetchall()}
 pm, missing = set(), set()
