@@ -44,8 +44,9 @@ def eff(mid, trig, who, chance, src):
         if st: rows.append((who, "status", st, None))
     if src.get("volatileStatus"): rows.append((who, "volatile", src["volatileStatus"], None))
     for s, v in (src.get("boosts") or {}).items(): rows.append((who, "stat_stage", s, v))
-    for w, v in (src.get("self") or {}).get("boosts", {}).items(): rows.append(("self", "stat_stage", w, v))
-    if (src.get("self") or {}).get("volatileStatus"): rows.append(("self", "volatile", src["self"]["volatileStatus"], None))
+    own = src.get("self") or src.get("selfBoost") or {}      # 최신 Showdown 은 능력 변화를 selfBoost 키로 옮김
+    for w, v in own.get("boosts", {}).items(): rows.append(("self", "stat_stage", w, v))
+    if own.get("volatileStatus"): rows.append(("self", "volatile", own["volatileStatus"], None))
     for a, kind, code, stg in rows:
         cur.execute("insert into move_effect (move_id,trigger_type,applies_to,kind,code,stages,chance_pct) values (%s,%s,%s,%s,%s,%s,%s)",
                     (mid, trig, a, kind, code, stg, chance)); neff += 1
