@@ -1387,6 +1387,8 @@ class Engine:
                 total += d
                 landed += 1
                 hit_sub = True
+                if key == "fling":
+                    A.item = ""                                   # 대타에 맞아도 던진 도구는 사라진다
                 self._say(st, f"  대타 -{d}")
                 if mv["drain"] and A.alive and d:
                     self.hp_change(st, i, A, max(1, math.floor(d * _frac(mv["drain"] / 100) + 0.5)), "흡수")
@@ -2122,6 +2124,8 @@ class Engine:
             if bm.alive and self.wx(st) == "sand" and not any(t in ("Rock", "Ground", "Steel") for t in bm.types) and \
                     norm(bm.ability) not in ("magicguard", "overcoat", "sandveil", "sandrush", "sandforce") and norm(bm.item) != "safetygoggles":
                 self.hp_change(st, i, bm, -max(1, bm.maxhp // 16), "모래바람")
+        for i in order:                                       # 효과 종류별로 모든 포켓몬을 처리한다 (날씨 1 -> 미래예지/희망사항 -> 필드·도구 -> 씨뿌리기 8 -> 독/화상 9~10)
+            bm = st.sides[i].mon
             fut = st.sides[i].future
             if fut:                                              # 미래예지: 3 -> 0 이 되는 턴 끝에 적중 (쓰러진 슬롯이면 사라진다)
                 fut["left"] -= 1
@@ -2136,6 +2140,8 @@ class Engine:
                     if bm.alive:
                         self.hp_change(st, i, bm, S_.wish[1], "희망사항")
                     S_.wish = None
+        for i in order:                                       # 효과 종류별로 모든 포켓몬을 처리한다 (날씨 1 -> 미래예지/희망사항 -> 필드·도구 -> 씨뿌리기 8 -> 독/화상 9~10)
+            bm = st.sides[i].mon
             if not bm.alive:
                 continue
             if st.terrain == "grassy" and bm.alive and self._grounded(bm):
@@ -2152,6 +2158,8 @@ class Engine:
                             break
             if bm.alive and norm(bm.item) == "blacksludge":
                 self.hp_change(st, i, bm, max(1, bm.maxhp // 16) if "Poison" in bm.types else -max(1, bm.maxhp // 8), "검은진흙")
+        for i in order:                                       # 효과 종류별로 모든 포켓몬을 처리한다 (날씨 1 -> 미래예지/희망사항 -> 필드·도구 -> 씨뿌리기 8 -> 독/화상 9~10)
+            bm = st.sides[i].mon
             if bm.alive and "leechseed" in bm.vol and norm(bm.ability) != "magicguard" and st.sides[1 - i].mon.alive:    # 씨를 뿌린 쪽이 쓰러졌으면 피해 없음
                 d = max(1, bm.maxhp // 8)
                 d = min(d, bm.hp)                                  # 실제로 깎인 만큼만 회복한다 (damage 반환값)
@@ -2159,6 +2167,8 @@ class Engine:
                 src = st.sides[1 - i].mon
                 if src.alive:
                     self.hp_change(st, 1 - i, src, d, "씨뿌리기 흡수")
+        for i in order:                                       # 효과 종류별로 모든 포켓몬을 처리한다 (날씨 1 -> 미래예지/희망사항 -> 필드·도구 -> 씨뿌리기 8 -> 독/화상 9~10)
+            bm = st.sides[i].mon
             if bm.alive and bm.status in ("psn", "tox", "brn") and norm(bm.ability) != "magicguard":
                 if bm.status == "psn" and norm(bm.ability) != "poisonheal":
                     self.hp_change(st, i, bm, -max(1, bm.maxhp // 8), "독")
