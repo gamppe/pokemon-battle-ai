@@ -462,7 +462,8 @@ class Engine:
         from_foe = src_side is not None
         if n < 0 and from_foe and bm.sub > 0:
             return 0
-        if n < 0 and from_foe:
+        broken = from_foe and norm(st.sides[src_side].mon.ability) in MOLD_BREAKERS and ab in self.data.breakable      # 틀깨기는 방어 특성을 무시
+        if n < 0 and from_foe and not broken:
             for r in self.data.ability_fx.get(ab, []):
                 if r["hook"] == "on_stat_drop" and r["kind"] == "immune" and r["code"] in ("all", stat, {"accuracy": "acc"}.get(stat, stat)):
                     return 0
@@ -1235,6 +1236,11 @@ class Engine:
                 if not last or (need and cat != need) or self._chart_immune(mv, D):
                     return
                 dmg, crit = max(1, math.floor(last * (2.0 if key in ("counter", "mirrorcoat") else 1.5))), False
+            elif key == "finalgambit":
+                if self._chart_immune(mv, D):
+                    self._say(st, "  효과 없음")
+                    return
+                dmg, crit = A.hp, False
             elif key == "superfang":
                 if self._chart_immune(mv, D):
                     return
