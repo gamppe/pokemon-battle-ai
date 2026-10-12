@@ -985,7 +985,9 @@ class Engine:
         self._damage_move(st, i, o, mv, rng, switch_policy)
         if self._landed:
             bm.last_failed = False
-        if any(e["code"] == "lockedmove" for e in mv["effects"]) and (bm.rampage or self._landed):
+        if any(e["code"] == "lockedmove" for e in mv["effects"]) and bm.rampage > 1 and not self._landed:
+            bm.rampage = 0                      # 잠긴 채로 쓴 기술이 실패하면(면역 등) 잠금만 풀린다. 혼란은 남은 지속이 1 이하일 때만
+        elif any(e["code"] == "lockedmove" for e in mv["effects"]) and (bm.rampage or self._landed):
             if not bm.rampage:
                 bm.rampage = rng.choice([2, 3])         # 이 턴 포함 남은 횟수 (이미 시작된 뒤에는 무효여도 계속)
             bm.rampage -= 1
@@ -1418,8 +1420,9 @@ class Engine:
             elif code == "throatchop":
                 tgt.throat = 2
             elif code == "healblock":
-                tgt.healblock = 5 if e["trigger_type"] == "primary" else 2
-                self._mental_herb(tgt)
+                if not tgt.healblock:                                # 이미 걸려 있으면 지속 시간을 갱신하지 않는다
+                    tgt.healblock = 5 if e["trigger_type"] == "primary" else 2
+                    self._mental_herb(tgt)
             elif code == "destinybond":
                 tgt.vol.add("destinybond")
             elif code == "stockpile":
