@@ -84,6 +84,7 @@ class BMon:
     trap_src: tuple | None = None
     orig: tuple | None = None            # 변신 전 (spec, sid, types, ability)
     encore: int = 0
+    encore_move: str = ""              # 앙코르로 고정된 기술 (걸린 시점에 저장한다. 발버둥 등으로 '직전 기술'이 바뀌어도 유지)
     last_move: str = ""
     last_attacker: tuple | None = None
     hurt_turn: int = -1
@@ -575,6 +576,7 @@ class Engine:
         bm = S.mon
         bm.active_turns, bm.moves_made, bm.moved, bm.used = 0, 0, False, set()
         bm.taunt = bm.stockpile = bm.yawn = bm.encore = bm.healblock = bm.rampage = bm.throat = bm.met_n = bm.disable_n = 0
+        bm.encore_move = ""
         bm.met_last = bm.disabled = ""
         bm.db_pending = False
         bm.last_move = ""
@@ -682,8 +684,8 @@ class Engine:
             ks = [k for k, m in enumerate(moves) if norm(m) == bm.last_move]
             if ks:
                 return [("m", ks[0])]
-        if bm.encore and bm.last_move:
-            ks = [k for k, m in enumerate(moves) if norm(m) == bm.last_move]
+        if bm.encore and bm.encore_move:
+            ks = [k for k, m in enumerate(moves) if norm(m) == bm.encore_move]
             if ks:
                 k0 = ks[0]
                 unusable = k0 in first_only or norm(moves[k0]) == bm.disabled or (bm.taunt and self.data.moves[norm(moves[k0])]["category"] == "status")
@@ -854,8 +856,8 @@ class Engine:
         mname = "struggle" if act[0] == "t" else bm.spec["moves"][act[1]]
         if bm.rampage and bm.last_move:
             mname = next((m for m in bm.spec["moves"] if norm(m) == bm.last_move), mname)
-        if bm.encore and bm.last_move and act[0] != "t" and norm(mname) != bm.last_move:
-            mname = next((m for m in bm.spec["moves"] if norm(m) == bm.last_move), mname)
+        if bm.encore and bm.encore_move and act[0] != "t" and norm(mname) != bm.encore_move:
+            mname = next((m for m in bm.spec["moves"] if norm(m) == bm.encore_move), mname)
         mv = self.data.moves[norm(mname)]
         self._say(st, f"[{i}] {bm.name}: {mv['name']}")
         if bm.disabled and norm(mname) == bm.disabled:         # 봉인: 이미 고른 기술도 쓰지 못하고 턴을 잃는다
@@ -1494,6 +1496,7 @@ class Engine:
         """멘탈허브: 도발/앙코르/힐블록 등이 걸리면 곧바로 풀고 소모한다 (onUpdate)"""
         if bm.alive and norm(bm.item) == "mentalherb" and (bm.taunt or bm.encore or bm.healblock or bm.disabled):
             bm.taunt = bm.encore = bm.healblock = bm.disable_n = 0
+            bm.encore_move = ""
             bm.disabled = ""
             bm.item = ""
 
@@ -1675,6 +1678,7 @@ class Engine:
             if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.encore and D.last_move and D.last_move not in ("encore",) and \
                     D.last_move not in D.spent and "failencore" not in self.data.moves[D.last_move]["flags"]:        # PP 가 0 인 기술(되살리기)에는 실패
                 D.encore = 4 if D.moved else 3                    # 이번 턴에 이미 움직인 상대는 1턴 더 (Showdown: willMove 가 아니면 duration++)
+                D.encore_move = D.last_move
                 self._mental_herb(D)
             else:
                 self._sfail = True
@@ -1898,6 +1902,8 @@ class Engine:
                 bm.healblock -= 1
             if bm.encore:
                 bm.encore -= 1
+                if not bm.encore:
+                    bm.encore_move = ""
             if bm.disable_n:
                 bm.disable_n -= 1
                 if not bm.disable_n:
