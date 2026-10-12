@@ -1059,7 +1059,9 @@ class Engine:
             self._status_move(st, i, mv, rng)
             bm.last_failed = self._sfail
             return
-        if norm(mv["name"]) not in MULTI_ACCURACY and not self._hits(st, i, o, mv, rng, target_is_self):
+        imm_first = (mv["category"] != "status" and foe_target and not mv["ohko"] and not mv["fixed_damage"]
+                     and self.rolls(st, i, o, norm(mv["name"]), False)["reason"] == "immune")      # 타입 면역은 명중 판정보다 먼저 (빗나감/반동이 아니라 효과 없음)
+        if not imm_first and norm(mv["name"]) not in MULTI_ACCURACY and not self._hits(st, i, o, mv, rng, target_is_self):
             self._say(st, "  빗나감")
             self._rampage_abort(st, bm, rng)
             self._self_destruct_fail(st, i, mv)
