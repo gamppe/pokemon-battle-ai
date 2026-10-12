@@ -743,9 +743,11 @@ class Engine:
         if st.winner is None:
             self._end_of_turn(st, rng)
             self._check_winner(st)
-        for i in (0, 1):
-            if st.winner is None and not st.sides[i].mon.alive:
-                self._replace(st, i, rng, switch_policy)
+        dead = [i for i in (0, 1) if st.winner is None and not st.sides[i].mon.alive]
+        if len(dead) == 2:      # 동시에 쓰러졌으면 쓰러진 포켓몬의 속도가 빠른 쪽이 먼저 나온다 (나중에 나온 쪽의 날씨/필드 특성이 이김)
+            dead.sort(key=lambda i: ((1 if st.trick_room else -1) * self.speed_of(st, i), rng.random()))
+        for i in dead:
+            self._replace(st, i, rng, switch_policy)
         for i in (0, 1):
             st.sides[i].mon.active_turns += 1
         self._check_winner(st)
@@ -1228,7 +1230,7 @@ class Engine:
         for r in mv["rules"]:
             if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and A.alive and total:
                 self.hp_change(st, i, A, -math.floor(A.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
-            elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard" and not hit_sub:
+            elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard":      # 대타를 때려도 깐다 (onAfterSubDamage)
                 self._side_condition(st, o, {"stealth_rock": "stealthrock"}.get(r["params"]["hazard"], r["params"]["hazard"]), swap=True)
         if mv["force_switch"] and not mv["self_switch"] and D.alive and not hit_sub and D.sub == 0 and norm(D.ability) != "suctioncups":
             cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]        # 드래곤테일 등: 끌어내기가 레드카드/탈출버튼보다 먼저
