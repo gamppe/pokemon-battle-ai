@@ -74,6 +74,7 @@ class BMon:
     active_turns: int = 0
     moves_made: int = 0
     locked: str | None = None
+    abil_orig: str | None = None            # 트레이스/특성교환으로 바뀌기 전의 특성 (교체하면 복원)
     recharge: bool = False
     moved: bool = False
     confusion: int = 0
@@ -428,6 +429,7 @@ class Engine:
                 applied = False
             elif code == "copy_foe_ability":                     # 트레이스: 등장할 때 상대 특성을 복사하고 그 특성의 등장 효과도 발동한다
                 if foe.alive and foe.ability and norm(foe.ability) not in NO_TRACE:
+                    bm.abil_orig = bm.abil_orig or bm.ability
                     bm.ability = foe.ability
                     self._say(st, f"  트레이스 -> {foe.ability}")
                     self._run_switch_in(st, side, bm, rng, only="ability")
@@ -591,6 +593,8 @@ class Engine:
                           dict(taunt=old.taunt, healblock=old.healblock, perish=old.perish, confusion=old.confusion))     # Baton Pass 로 넘어가는 상태 (noCopy 가 아닌 것)
             old.boosts, old.vol, old.locked, old.protect_n, old.recharge = {}, set(), None, 0, False
             old.perish = 0
+            if old.abil_orig is not None:
+                old.ability, old.abil_orig = old.abil_orig, None
             old.charged = 0
             old.ate_berry = False
             old.sub, old.charge, old.semi, old.trap = 0, None, None, 0
@@ -1766,6 +1770,7 @@ class Engine:
         if key == "skillswap":
             if D.sub == 0 or "bypasssub" in mv["flags"]:
                 if norm(A.ability) not in NO_SWAP and norm(D.ability) not in NO_SWAP:
+                    A.abil_orig, D.abil_orig = A.abil_orig or A.ability, D.abil_orig or D.ability
                     A.ability, D.ability = D.ability, A.ability
                     for sd_, m_ in ((i, A), (o, D)):                 # 바꿔 받은 특성의 등장 효과가 바로 발동한다 (사이코메이커, 위협 등)
                         if m_.alive:
