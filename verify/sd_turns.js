@@ -16,6 +16,8 @@ function mkSet(s, idx) {
 }
 
 function summary(battle) {
+  // 턴이 끝난 시점에는 열매/허브 등이 다음 Update 이벤트에서 소모되도록 대기 중일 수 있다 (엔진은 즉시 처리) -> 읽기 전에 한 번 돌려 맞춘다
+  battle.eachEvent('Update');
   const mons = battle.sides.map(side => {
     const o = [];
     for (const p of side.pokemon) {
