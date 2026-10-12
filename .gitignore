@@ -29,3 +29,4 @@ venv/
 Thumbs.db
 
 etl/cache_meta/
+etl/cache_replays/

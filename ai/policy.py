@@ -61,8 +61,8 @@ def greedy_action(eng, st, side, rng, eps=0.08, allow_switch=True):
     for a in acts:
         if a[0] == "m":
             v = move_value(eng, st, side, a[1]) + rng.random() * 0.01
-        elif a[0] == "r":
-            v = 0
+        elif a[0] in ("r", "t"):
+            v = 0.0 if a[0] == "r" else 0.05      # 재충전 턴 / 발버둥(선택지가 없을 때)
         else:
             v = -9
         if v > bv:
