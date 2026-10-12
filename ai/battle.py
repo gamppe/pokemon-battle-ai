@@ -561,6 +561,8 @@ class Engine:
         return True
 
     def _confuse(self, st, bm, turns):
+        if st.terrain == "misty" and self._grounded(bm):             # 미스트필드: 땅에 있는 포켓몬은 혼란도 걸리지 않는다
+            return
         bm.vol.add("confusion")
         bm.confusion = turns
         for src, r in self.rows(bm, "on_status"):
