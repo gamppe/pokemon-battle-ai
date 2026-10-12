@@ -507,7 +507,8 @@ class Engine:
                 if (s == code or s == "any" or (s == "psn" and code == "tox")) and self._cond_ok(r["cond"], st, side, bm):
                     return False
         if code in ("psn", "tox"):
-            if "Poison" in bm.types or "Steel" in bm.types:
+            corrosion = src_side is not None and src_side != side and norm(st.sides[src_side].mon.ability) == "corrosion"
+            if ("Poison" in bm.types or "Steel" in bm.types) and not corrosion:
                 return False
         elif STATUS_IMMUNE_TYPE.get(code) in bm.types:
             return False
@@ -917,7 +918,7 @@ class Engine:
             if norm(bm.item) not in CHOICE:
                 bm.locked = None
             bm.charge, bm.semi = None, None
-            bm.rampage = 0
+            self._rampage_abort(st, bm, rng)
             return
         if norm(mname) == "focuspunch" and bm.hurt_turn == st.turn:      # 행동 전에 공격을 받으면 집중이 흐트러져 기술을 쓰지 못한다 (BeforeMove 중단)
             self._say(st, "  집중이 흐트러졌다")
