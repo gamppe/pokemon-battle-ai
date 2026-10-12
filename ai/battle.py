@@ -74,6 +74,7 @@ class BMon:
     active_turns: int = 0
     moves_made: int = 0
     locked: str | None = None
+    unnerved: bool = False                    # 긴장감 때문에 열매를 먹지 못한 상태 (긴장감이 사라지면 다시 판정)
     last_item: str = ""                       # 마지막으로 먹은 열매 (수확 특성용)
     abil_orig: str | None = None            # 트레이스/특성교환으로 바뀌기 전의 특성 (교체하면 복원)
     recharge: bool = False
@@ -458,7 +459,9 @@ class Engine:
                 continue
             if not self._cond_ok(r["cond"], st, side, bm, mv, hp_before):
                 continue
-            if src == "item" and not bm.item:
+            if src == "item" and bm.item and self._unnerved(st, bm):
+                bm.unnerved = True
+            if src == "item" and (not bm.item or self._unnerved(st, bm)):
                 continue
             tag = ("item:" if src == "item" else "ability:") + r["label"].split(":", 1)[1]
             self.apply_row(st, tag, r, side, bm, rng, mv, dmg, foe_side)
@@ -560,7 +563,9 @@ class Engine:
         bm.vol.add("confusion")
         bm.confusion = turns
         for src, r in self.rows(bm, "on_status"):
-            if r["kind"] == "cure_status" and bm.item and src == "item":
+            if r["kind"] == "cure_status" and bm.item and src == "item" and self._unnerved(st, bm):
+                bm.unnerved = True
+            if r["kind"] == "cure_status" and bm.item and src == "item" and not self._unnerved(st, bm):
                 codes = (r["code"] or "").split("|")
                 if "confusion" in codes:
                     bm.vol.discard("confusion")
@@ -570,9 +575,36 @@ class Engine:
                     bm.item = ""
                     break
 
+    def _update_berries(self, st, rng):
+        """긴장감 등으로 먹지 못했던 열매는 조건이 남아 있으면 방해가 사라진 뒤 바로 먹는다 (Showdown 의 onUpdate)"""
+        for k in (0, 1):
+            m = st.sides[k].mon
+            if m.alive and m.unnerved and m.item:
+                if self._unnerved(st, m):
+                    continue
+                m.unnerved = False
+                if m.status:
+                    self._status_item_cure(st, m, m.status)
+                if m.alive and m.item:
+                    self.run_hook(st, k, m, "on_damage_taken_hp", rng, only="item")
+            elif m.unnerved and not m.item:
+                m.unnerved = False
+
+    def _unnerved(self, st, bm):
+        """상대가 긴장감(Unnerve) 특성이면 열매를 먹을 수 없다"""
+        if not norm(bm.item).endswith("berry"):
+            return False
+        for k in (0, 1):
+            if st.sides[k].mon is bm:
+                foe = st.sides[1 - k].mon
+                return foe.alive and any(r["code"] == "foe_cannot_eat_berries" for r in self.data.ability_fx.get(norm(foe.ability), []))
+        return False
+
     def _status_item_cure(self, st, bm, code):
         for src, r in self.rows(bm, "on_status"):
-            if r["kind"] == "cure_status" and bm.item and src == "item":
+            if r["kind"] == "cure_status" and bm.item and src == "item" and self._unnerved(st, bm):
+                bm.unnerved = True
+            if r["kind"] == "cure_status" and bm.item and src == "item" and not self._unnerved(st, bm):
                 codes = (r["code"] or "").split("|")
                 if "any" in codes or code in codes or (code == "tox" and "psn" in codes):
                     bm.status = None
@@ -859,6 +891,7 @@ class Engine:
         for i in (0, 1):
             st.sides[i].mon.active_turns += 1
         self._check_winner(st)
+        self._update_berries(st, rng)
         self._forecast_sync(st)
         return st
 
@@ -1025,6 +1058,7 @@ class Engine:
         if mv["type"] == "Electric" and bm.charged:                 # 전기 기술을 쓰고 나면 충전 해제 (onAfterMove)
             bm.charged = 0
         st.lastmove_any = norm(mname)                       # Copycat 용: 전투 전체에서 마지막으로 쓰인 기술
+        self._update_berries(st, rng)
         self._forecast_sync(st)
         for S_ in st.sides:                                 # 구애 아이템을 잃으면(트릭 등) 기술 고정도 풀린다 (choicelock 볼라타일은 아이템이 바뀌면 사라짐)
             if S_.mon.locked and norm(S_.mon.item) not in CHOICE:
@@ -1390,7 +1424,7 @@ class Engine:
                     any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
                 A.item, D.item = D.item, ""                       # 도둑질/탐내기: 도구를 빼앗는다 (자신이 도구가 없을 때, 열매 소비보다 먼저)
             if key in ("bugbite", "pluck") and A.alive and D.item and norm(D.item).endswith("berry") \
-                    and norm(D.ability) != "stickyhold":                # 벌레먹기/쪼기: 상대의 열매를 빼앗아 바로 먹고 효과를 얻는다
+                    and norm(D.ability) != "stickyhold" and not any(r["code"] == "foe_cannot_eat_berries" for r in self.data.ability_fx.get(norm(D.ability), [])):                # 벌레먹기/쪼기: 상대의 열매를 빼앗아 바로 먹고 효과를 얻는다
                 berry, own = D.item, A.item
                 D.item, A.item = "", berry
                 for hook_ in ("on_damage_taken_hp", "on_status"):         # 먹은 즉시 열매의 효과가 나온다 (HP 조건은 보지 않는다)
@@ -1695,6 +1729,8 @@ class Engine:
             pick = rng.choice(cand)
             self._say(st, f"  잠꼬대 -> {self.data.moves[norm(pick)]['name']}")
             self._run_move(st, i, self.data.moves[norm(pick)], norm(pick), self._acts, rng, self._policy)
+            if A.rampage:
+                A.last_move = norm(pick)                      # 잠꼬대로 쓴 난동부리기류는 다음 턴에도 그 기술로 잠긴다
             return
         if key == "copycat":                        # 전투 전체에서 직전에 쓰인 기술을 그대로 쓴다 (불러 쓸 수 없는 기술이면 실패)
             lm = st.lastmove_any
