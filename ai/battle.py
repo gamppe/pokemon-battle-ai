@@ -851,12 +851,6 @@ class Engine:
         if norm(mname) != "destinybond":
             bm.db_pending = False
         bm.prev_failed, bm.last_failed = bm.last_failed, True            # 성공 지점에서 False 로 바꾼다 (자폭/심술/고집 등 '직전 기술 실패' 조건용)
-        # 스탠스체인지: 공격하면 블레이드폼, 킹실드는 실드폼
-        if norm(bm.ability) == "stancechange" and bm.sid in ("aegislash", "aegislashblade") and not bm.orig:
-            if norm(mv["name"]) == "kingsshield":
-                bm.sid = "aegislash"
-            elif mv["category"] != "status":
-                bm.sid = "aegislashblade"
         if not self._can_act(st, i, bm, rng):
             bm.db_pending = False                           # 기술이 중단되면 Destiny Bond 도 풀린다 (onMoveAborted)
             if norm(bm.item) not in CHOICE:
@@ -873,7 +867,13 @@ class Engine:
         if bm.healblock and "heal" in mv["flags"]:
             self._say(st, "  힐블록으로 사용 불가")
             return
-        if norm(bm.item) in CHOICE:
+        # 스탠스체인지: 기술을 실제로 쓰게 된 뒤에 바뀐다 (풀죽음/수면 등으로 움직이지 못하면 폼 그대로). 공격하면 블레이드폼, 킹실드는 실드폼
+        if norm(bm.ability) == "stancechange" and bm.sid in ("aegislash", "aegislashblade") and not bm.orig:
+            if norm(mv["name"]) == "kingsshield":
+                bm.sid = "aegislash"
+            elif mv["category"] != "status":
+                bm.sid = "aegislashblade"
+        if norm(bm.item) in CHOICE and norm(mname) != "struggle":      # 발버둥은 고정 기술을 바꾸지 않는다 (쓸 수 없는 기술에 고정되면 계속 발버둥)
             bm.locked = mname
         if norm(bm.item) != "metronome":
             bm.met_n, bm.met_last = 0, ""
@@ -1828,6 +1828,13 @@ class Engine:
                     st.sides[i].future = None
                     if bm.alive:
                         self._future_hit(st, i, fut, rng)
+            S_ = st.sides[i]
+            if S_.wish:                                          # 슬롯에 걸린 효과라서 쓰러진 턴에도 카운트가 진행된다 (대상이 없으면 사라짐)
+                S_.wish[0] -= 1
+                if S_.wish[0] <= 0:
+                    if bm.alive:
+                        self.hp_change(st, i, bm, S_.wish[1], "희망사항")
+                    S_.wish = None
             if not bm.alive:
                 continue
             if st.weather == "sand" and not any(t in ("Rock", "Ground", "Steel") for t in bm.types) and \
@@ -1835,13 +1842,6 @@ class Engine:
                 self.hp_change(st, i, bm, -max(1, bm.maxhp // 16), "모래바람")
             if st.terrain == "grassy" and bm.alive and self._grounded(bm):
                 self.hp_change(st, i, bm, max(1, bm.maxhp // 16), "그래스필드")
-            S_ = st.sides[i]
-            if S_.wish:
-                S_.wish[0] -= 1
-                if S_.wish[0] <= 0:
-                    if bm.alive:
-                        self.hp_change(st, i, bm, S_.wish[1], "희망사항")
-                    S_.wish = None
             if bm.alive:
                 for src, r in self.rows(bm, "turn_end"):
                     if not self._cond_ok(r["cond"], st, i, bm):
