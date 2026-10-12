@@ -392,9 +392,10 @@ class Engine:
             if st.weather != code:                          # 이미 같은 날씨면 지속 시간이 갱신되지 않는다
                 self._set_weather(st, code, bm)
         elif kind == "set_terrain":
-            st.terrain = code
-            st.terrain_turns = 8 if any(r["code"] == "extend_terrain" for r in self.data.item_fx.get(norm(bm.item), [])) else 5
-            self._terrain_seeds(st, rng)
+            if st.terrain != code:                          # 이미 같은 필드면 아무 일도 없다 (지속 시간도 갱신되지 않음)
+                st.terrain = code
+                st.terrain_turns = 8 if any(r["code"] == "extend_terrain" for r in self.data.item_fx.get(norm(bm.item), [])) else 5
+                self._terrain_seeds(st, rng)
         elif kind == "cure_status":
             if bm.status and (code in ("any", None) or bm.status in code.split("|")):
                 bm.status = None
