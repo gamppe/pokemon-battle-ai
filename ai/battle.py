@@ -57,6 +57,9 @@ class BMon:
     protect_n: int = 0
     met_last: str = ""                 # 메트로놈 도구: 직전에 쓴 기술 / 연속 사용 횟수
     met_n: int = 0
+    hid_item: str = ""                 # 매직룸 동안 숨겨 둔 도구
+    disabled: str = ""                 # 봉인된 기술 / 남은 턴
+    disable_n: int = 0
     active_turns: int = 0
     moves_made: int = 0
     locked: str | None = None
@@ -121,6 +124,7 @@ class State:
     terrain: str | None = None
     terrain_turns: int = 0
     trick_room: int = 0
+    magic_room: int = 0
     turn: int = 0
     winner: int | None = None        # 0 / 1 / -1(무승부)
     last_hit: list = field(default_factory=lambda: [0, 0])
@@ -239,7 +243,7 @@ class Engine:
         s = calc_speed(c, m)
         if st.sides[i].screens.get("tailwind", 0) > 0:
             s *= 2
-        if norm(bm.ability) == "unburden" and not bm.item and bm.spec.get("item"):
+        if norm(bm.ability) == "unburden" and not bm.item and not bm.hid_item and bm.spec.get("item"):
             s *= 2
         return s
 
@@ -554,8 +558,8 @@ class Engine:
             S.active = to
         bm = S.mon
         bm.active_turns, bm.moves_made, bm.moved, bm.used = 0, 0, False, set()
-        bm.taunt = bm.stockpile = bm.yawn = bm.encore = bm.healblock = bm.rampage = bm.throat = bm.met_n = 0
-        bm.met_last = ""
+        bm.taunt = bm.stockpile = bm.yawn = bm.encore = bm.healblock = bm.rampage = bm.throat = bm.met_n = bm.disable_n = 0
+        bm.met_last = bm.disabled = ""
         bm.last_move = ""
         if passed:
             bm.boosts, bm.sub, bm.vol = passed[0], passed[1], set(passed[2])
@@ -665,7 +669,7 @@ class Engine:
                     acts += [("s", j) for j in S.alive_idx() if j != S.active]
                 return acts
         if bm.taunt:
-            ok = [k for k, m in enumerate(moves) if self.data.moves[norm(m)]["category"] != "status" and k not in first_only]
+            ok = [k for k, m in enumerate(moves) if self.data.moves[norm(m)]["category"] != "status" and k not in first_only and norm(m) != bm.disabled]
             if ok:
                 acts = [("m", k) for k in ok]
                 if not bm.trap and norm(st.sides[1 - side].mon.ability) != "shadowtag":
@@ -675,6 +679,7 @@ class Engine:
             ks = [moves.index(bm.locked)]
         else:
             ks = list(range(len(moves)))
+        ks = [k for k in ks if norm(moves[k]) != bm.disabled]
         acts += [("m", k) for k in ks if k not in first_only] or [("t", 0)]
         if not bm.trap and "shadowtag" != norm(st.sides[1 - side].mon.ability):
             acts += [("s", j) for j in S.alive_idx() if j != S.active]
@@ -812,6 +817,9 @@ class Engine:
             mname = next((m for m in bm.spec["moves"] if norm(m) == bm.last_move), mname)
         mv = self.data.moves[norm(mname)]
         self._say(st, f"[{i}] {bm.name}: {mv['name']}")
+        if bm.disabled and norm(mname) == bm.disabled:         # 봉인: 이미 고른 기술도 쓰지 못하고 턴을 잃는다
+            self._say(st, "  봉인으로 사용 불가")
+            return
         bm.moves_made += 1
         bm.vol.discard("glaiverush")
         bm.vol.discard("destinybond")
@@ -1355,10 +1363,20 @@ class Engine:
         else:
             self._unsup(f"{k}:{code}")
 
+    def _magic_end(self, st):
+        st.magic_room = 0
+        for S_ in st.sides:
+            for m_ in S_.team:
+                if m_.hid_item:
+                    if not m_.item:
+                        m_.item = m_.hid_item
+                    m_.hid_item = ""
+
     def _mental_herb(self, bm):
         """멘탈허브: 도발/앙코르/힐블록 등이 걸리면 곧바로 풀고 소모한다 (onUpdate)"""
-        if bm.alive and norm(bm.item) == "mentalherb" and (bm.taunt or bm.encore or bm.healblock):
-            bm.taunt = bm.encore = bm.healblock = 0
+        if bm.alive and norm(bm.item) == "mentalherb" and (bm.taunt or bm.encore or bm.healblock or bm.disabled):
+            bm.taunt = bm.encore = bm.healblock = bm.disable_n = 0
+            bm.disabled = ""
             bm.item = ""
 
     def _will_act(self, st, i):
@@ -1395,7 +1413,7 @@ class Engine:
                 A.protect_n = 0
             return
         tself = mv["target"] in NON_FOE_TARGETS
-        if "reflectable" in mv["flags"] and norm(D.ability) == "magicbounce" and not bounced and mv["target"] in ("normal", "foeSide"):
+        if "reflectable" in mv["flags"] and D.alive and norm(D.ability) == "magicbounce" and not bounced and mv["target"] in ("normal", "foeSide"):
             self._say(st, "  반사")
             self._status_move(st, o, mv, rng, bounced=True)
             return
@@ -1468,6 +1486,16 @@ class Engine:
                 if vb is not None:
                     a.screens[k] = vb
             return
+        if key == "magicroom":                  # 매직룸: 5턴 동안 모든 도구 효과가 사라진다 (다시 쓰면 해제). 도구를 숨겼다가 끝나면 되돌린다
+            if st.magic_room:
+                self._magic_end(st)
+            else:
+                st.magic_room = 5
+                for S_ in st.sides:
+                    for m_ in S_.team:
+                        if m_.item:
+                            m_.hid_item, m_.item = m_.item, ""
+            return
         if key == "trickroom":
             st.trick_room = 0 if st.trick_room else 5
             return
@@ -1485,6 +1513,11 @@ class Engine:
             if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.yawn and not D.status and not (st.terrain in ("electric", "misty") and self._grounded(D)):
                 if not any(r["hook"] == "immunity" and (r["code"] or "").startswith("status:slp") for r in self.data.ability_fx.get(norm(D.ability), [])):
                     D.yawn = 2
+            return
+        if key == "disable":
+            if D.alive and not D.disabled and D.last_move and D.last_move != "struggle":
+                D.disabled, D.disable_n = D.last_move, (5 if D.moved else 4)
+                self._mental_herb(D)
             return
         if key == "encore":
             if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.encore and D.last_move and D.last_move not in ("encore",) and \
@@ -1695,6 +1728,10 @@ class Engine:
                 bm.healblock -= 1
             if bm.encore:
                 bm.encore -= 1
+            if bm.disable_n:
+                bm.disable_n -= 1
+                if not bm.disable_n:
+                    bm.disabled = ""
             if bm.throat:
                 bm.throat -= 1
             if bm.yawn:
@@ -1729,6 +1766,10 @@ class Engine:
             st.terrain_turns -= 1
             if st.terrain_turns <= 0:
                 st.terrain = None
+        if st.magic_room:
+            st.magic_room -= 1
+            if not st.magic_room:
+                self._magic_end(st)
 
     # ───────────────────────── 편의 ─────────────────────────
     def clone(self, st):

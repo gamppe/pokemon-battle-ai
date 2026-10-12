@@ -58,7 +58,7 @@ def make_scenarios(meta, data, n, turns, seed, only=None):
 def summarize_ours(st):
     mons = []
     for side in st.sides:
-        mons.append([dict(hp=m.hp, st=m.status or "", b={k: v for k, v in m.boosts.items() if v}, it=norm(m.item), fnt=int(not m.alive))
+        mons.append([dict(hp=m.hp, st=m.status or "", b={k: v for k, v in m.boosts.items() if v}, it=norm(m.item or m.hid_item), fnt=int(not m.alive))
                      for m in side.team])
     sc = []
     for side in st.sides:
