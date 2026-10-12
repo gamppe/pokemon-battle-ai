@@ -705,11 +705,11 @@ class Engine:
             first_only = set()
         first_only |= no_revive | no_sound
         if bm.charge:
-            return [("m", next(k for k, m in enumerate(moves) if norm(m) == bm.charge))]
+            return [("m", next(k for k, m in enumerate(moves) if norm(m) == bm.charge))] + self._switch_acts(st, side)
         if bm.rampage and bm.last_move:
             ks = [k for k, m in enumerate(moves) if norm(m) == bm.last_move]
             if ks:
-                return [("m", ks[0])]
+                return [("m", ks[0])] + self._switch_acts(st, side)       # 기술이 잠겨도 교체는 가능 (Showdown 은 trapped 일 때만 막는다)
         if bm.encore and bm.encore_move:
             ks = [k for k, m in enumerate(moves) if norm(m) == bm.encore_move]
             if ks:
@@ -736,6 +736,10 @@ class Engine:
         if self._can_switch(st, side):
             acts += [("s", j) for j in S.alive_idx() if j != S.active]
         return acts
+
+    def _switch_acts(self, st, side):
+        S = st.sides[side]
+        return [("s", j) for j in S.alive_idx() if j != S.active] if self._can_switch(st, side) else []
 
     def _can_switch(self, st, side):
         """교체 가능 여부: 도구 '벗어난껍질'과 고스트 타입은 속박/그림자밟기에 잡히지 않는다 (Showdown: trapped 면역)"""
@@ -897,6 +901,7 @@ class Engine:
         self._say(st, f"[{i}] {bm.name}: {mv['name']}")
         if bm.disabled and norm(mname) == bm.disabled:         # 봉인: 이미 고른 기술도 쓰지 못하고 턴을 잃는다
             self._say(st, "  봉인으로 사용 불가")
+            self._rampage_abort(st, bm, rng)
             return
         bm.moves_made += 1
         bm.vol.discard("beakblast")                         # 기술이 나가는 순간 대기 상태가 끝난다
