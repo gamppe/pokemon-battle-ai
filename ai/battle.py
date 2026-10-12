@@ -84,6 +84,7 @@ class BMon:
     last_attacker: tuple | None = None
     hurt_turn: int = -1
     lowered_turn: int = -1
+    raised_turn: int = -1              # 이번 턴에 능력이 올랐는가 (투명목소리/질투의불꽃 조건)
     last_failed: bool = False
     prev_failed: bool = False
     times_attacked: int = 0
@@ -447,6 +448,8 @@ class Engine:
         old = bm.boosts.get(stat, 0)
         new = max(-6, min(6, old + n))
         bm.boosts[stat] = new
+        if n > 0 and new != old:
+            bm.raised_turn = st.turn
         if n < 0 and new != old:
             bm.lowered_turn = st.turn
             for src, r in self.rows(bm, "on_stat_drop"):
@@ -1297,8 +1300,11 @@ class Engine:
         if norm(A.ability) == "sheerforce":
             return
         mult = 2 if norm(A.ability) == "serenegrace" else 1
+        need_raised = norm(mv["name"]) in ("alluringvoice", "burningjealousy")        # 상대가 이번 턴 능력이 올랐을 때만 (onHit 코드 조건)
         for e in mv["effects"]:
             if e["trigger_type"] != "secondary":
+                continue
+            if need_raised and e["applies_to"] == "target" and D.raised_turn != st.turn:
                 continue
             if e["applies_to"] == "target":
                 if hit_sub or not D.alive or norm(D.ability) == "shielddust" or norm(D.item) == "covertcloak":
