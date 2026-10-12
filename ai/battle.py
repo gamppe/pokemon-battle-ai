@@ -674,11 +674,10 @@ class Engine:
             ks = list(range(len(moves)))
         if bm.taunt:
             ok = [k for k in ks if self.data.moves[norm(moves[k])]["category"] != "status" and k not in first_only and norm(moves[k]) != bm.disabled]
-            if ok:
-                acts = [("m", k) for k in ok]
-                if not bm.trap and norm(st.sides[1 - side].mon.ability) != "shadowtag":
-                    acts += [("s", j) for j in S.alive_idx() if j != S.active]
-                return acts
+            acts = [("m", k) for k in ok] or [("t", 0)]               # 도발로 쓸 수 있는 기술이 없으면 발버둥
+            if not bm.trap and norm(st.sides[1 - side].mon.ability) != "shadowtag":
+                acts += [("s", j) for j in S.alive_idx() if j != S.active]
+            return acts
         ks = [k for k in ks if norm(moves[k]) != bm.disabled]
         acts += [("m", k) for k in ks if k not in first_only] or [("t", 0)]
         if not bm.trap and "shadowtag" != norm(st.sides[1 - side].mon.ability):
