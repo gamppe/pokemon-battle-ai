@@ -1141,8 +1141,8 @@ class Engine:
             self.hp_change(st, i, A, -max(1, math.floor(total * _frac(mv["recoil"] / 100) + 0.5)), "반동")
         if A.alive and landed:
             self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="ability")
+        self._secondary(st, i, o, mv, rng, hit_sub)      # 대타는 상대에게 걸리는 부가효과만 막고, 자신에게 걸리는 효과(불꽃의charge 등)는 그대로 적용
         if not hit_sub:
-            self._secondary(st, i, o, mv, rng)
             if key == "knockoff" and D.item and norm(D.ability) != "stickyhold" and not (
                     any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
                 D.item = ""
@@ -1235,7 +1235,7 @@ class Engine:
                     self.change_boost(st, i, A, v[0], v[1], src_side=o)
 
     # ───────────────────────── 부가효과 ─────────────────────────
-    def _secondary(self, st, i, o, mv, rng):
+    def _secondary(self, st, i, o, mv, rng, hit_sub=False):
         A, D = st.sides[i].mon, st.sides[o].mon
         if norm(A.ability) == "sheerforce":
             return
@@ -1244,7 +1244,7 @@ class Engine:
             if e["trigger_type"] != "secondary":
                 continue
             if e["applies_to"] == "target":
-                if not D.alive or norm(D.ability) == "shielddust" or norm(D.item) == "covertcloak":
+                if hit_sub or not D.alive or norm(D.ability) == "shielddust" or norm(D.item) == "covertcloak":
                     continue
             elif not A.alive:
                 continue
