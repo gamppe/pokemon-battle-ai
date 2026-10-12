@@ -59,6 +59,8 @@ class BMon:
     met_n: int = 0
     hid_item: str = ""                 # 매직룸 동안 숨겨 둔 도구
     frz_n: int = 0                     # 챔피언스 얼음: 행동 시도 3번이 지나면 반드시 풀림
+    busted: bool = False               # 변장이 깨진 상태 (교체해도 유지된다)
+    perish: int = 0                    # 멸망의노래 카운트 (4 에서 시작해 턴 끝마다 1 감소, 0 이 되면 쓰러짐)
     disabled: str = ""                 # 봉인된 기술 / 남은 턴
     disable_n: int = 0
     active_turns: int = 0
@@ -109,6 +111,7 @@ class Side:
     screens: dict = field(default_factory=dict)       # reflect/light_screen/aurora_veil/tailwind/safeguard -> 남은 턴
     wish: list | None = None                          # [남은 턴, 회복량]
     heal_next: str | None = None                      # healingwish / lunardance
+    future: dict | None = None                        # 미래예지 등 지연 공격 {left, src(BMon), key} -- 이 슬롯이 맞는 쪽에 저장
 
     @property
     def mon(self):
@@ -548,8 +551,10 @@ class Engine:
         if to is not None:
             old = S.mon
             if carry:
-                passed = (dict(old.boosts), old.sub, {v for v in old.vol if v in ("leechseed", "focusenergy")})
+                passed = (dict(old.boosts), old.sub, {v for v in old.vol if v in ("leechseed", "focusenergy", "curse", "confusion")},
+                          dict(taunt=old.taunt, healblock=old.healblock, perish=old.perish, confusion=old.confusion))     # Baton Pass 로 넘어가는 상태 (noCopy 가 아닌 것)
             old.boosts, old.vol, old.locked, old.protect_n, old.recharge = {}, set(), None, 0, False
+            old.perish = 0
             old.sub, old.charge, old.semi, old.trap = 0, None, None, 0
             if old.orig:
                 old.spec, old.sid, old.types, old.ability = old.orig
@@ -571,6 +576,8 @@ class Engine:
         bm.last_move = ""
         if passed:
             bm.boosts, bm.sub, bm.vol = passed[0], passed[1], set(passed[2])
+            for k_, v_ in passed[3].items():
+                setattr(bm, k_, v_)
         self._say(st, f"[{side}] {bm.name} 등장")
         if S.heal_next and (bm.hp < bm.maxhp or bm.status):          # 체력이 가득하고 상태이상도 없으면 효과를 남겨 두었다가 다음 교체 대상에게 쓴다
             bm.hp, bm.status = bm.maxhp, None
@@ -682,6 +689,8 @@ class Engine:
             ks = [moves.index(bm.locked)]
         else:
             ks = list(range(len(moves)))
+        if bm.healblock:                                    # 힐블록: 회복 기술은 고를 수 없다
+            ks = [k for k in ks if "heal" not in self.data.moves[norm(moves[k])]["flags"]]
         if bm.taunt:
             ok = [k for k in ks if self.data.moves[norm(moves[k])]["category"] != "status" and k not in first_only and norm(moves[k]) != bm.disabled]
             acts = [("m", k) for k in ok] or [("t", 0)]               # 도발로 쓸 수 있는 기술이 없으면 발버둥
@@ -854,6 +863,9 @@ class Engine:
         if bm.taunt and mv["category"] == "status":
             self._say(st, "  도발로 사용 불가")
             return
+        if bm.healblock and "heal" in mv["flags"]:
+            self._say(st, "  힐블록으로 사용 불가")
+            return
         if norm(bm.item) in CHOICE:
             bm.locked = mname
         if norm(bm.item) != "metronome":
@@ -866,8 +878,7 @@ class Engine:
             bm.met_last = norm(mv["name"])
         bm.moved = True
         bm.prev_move = bm.last_move
-        if norm(mname) not in ("encore",):
-            bm.last_move = norm(mname)
+        bm.last_move = norm(mname)             # 앙코르도 마지막 기술로 기록된다 (그 직후의 앙코르는 대상의 마지막 기술이 앙코르라서 실패)
         if norm(mname) == "revivalblessing":
             if norm(bm.item) == "leppaberry":                      # PP 1 이 0 이 되면 Leppa 열매가 PP 를 회복한다 (이후 다시 쓸 수 있음)
                 bm.item = ""
@@ -900,6 +911,14 @@ class Engine:
         if norm(mv["name"]) not in STALL_MOVES:
             bm.protect_n = 0
         if not self._use_condition_ok(st, i, mv, acts):
+            return
+        if norm(mv["name"]) in ("futuresight", "doomdesire"):   # 지연 공격: 쓴 턴에는 피해가 없고, 2턴 뒤 턴 종료 때 상대 슬롯을 때린다 (이미 걸려 있으면 실패)
+            if st.sides[1 - i].future is None:
+                st.sides[1 - i].future = dict(left=3, src=bm, key=norm(mv["name"]))
+                self._say(st, "  미래공격 예약")
+                bm.last_failed = False
+            else:
+                self._say(st, "  실패")
             return
         counter_fail = norm(mv["name"]) in ("counter", "mirrorcoat", "metalburst") and not st.last_hit[i]
         if norm(bm.ability) in ("protean", "libero") and "protean" not in bm.vol and not counter_fail and bm.types != [mv["type"]]:
@@ -1171,8 +1190,8 @@ class Engine:
                 if mv["drain"] and A.alive and d:
                     self.hp_change(st, i, A, max(1, math.floor(d * _frac(mv["drain"] / 100) + 0.5)), "흡수")
                 continue
-            if "busted" not in D.vol and norm(D.ability) == "disguise" and D.sid == "mimikyu":      # 탈 (첫 피격 무효, 최대 HP의 1/8 손해)
-                D.vol.add("busted")
+            if not D.busted and norm(D.ability) == "disguise" and D.sid == "mimikyu":      # 탈 (첫 피격 무효, 최대 HP의 1/8 손해)
+                D.busted = True
                 self.hp_change(st, o, D, -max(1, D.maxhp // 8), "탈")
                 self._say(st, "  탈 벗겨짐")
                 landed += 1
@@ -1403,13 +1422,36 @@ class Engine:
                     self.change_boost(st, tgt_side, tgt, "spd", 1)
             elif code == "partiallytrapped":
                 if not tgt.trap and tgt.sub == 0:
-                    tgt.trap = 7 if norm(st.sides[i].mon.item) == "gripclaw" else rng.choice([4, 5])
+                    tgt.trap = 8 if norm(st.sides[i].mon.item) == "gripclaw" else rng.choice([5, 6])       # Showdown: random(5, 7) / 조임손톱 8
                     tgt.trap_src = (i, st.sides[i].active)
                     tgt.vol.add("bindband" if norm(st.sides[i].mon.item) == "bindingband" else "bind")
             elif code not in PROTECT_MOVES:
                 self._unsup("volatile:" + code)
         else:
             self._unsup(f"{k}:{code}")
+
+    def _future_hit(self, st, tgt_side, fut, rng):
+        """미래예지/파멸의소원 적중: 맞는 시점의 상태로 피해를 계산한다 (쓴 포켓몬이 쓰러졌거나 교체됐어도 맞는다)"""
+        mv = self.data.moves[fut["key"]]
+        src, D = fut["src"], st.sides[tgt_side].mon
+        F = self.field_for(st, tgt_side)
+        sa, sd = self.spec_of(src), self.spec_of(D)
+        r = calc(self.data, sa, sd, mv["name"], F, False, hit=1, proc=False, flags=frozenset({"progress"}))
+        if not r["rolls"]:
+            self._say(st, "  미래공격: 효과 없음")
+            return
+        if rng.random() < 1 / 24:
+            r = calc(self.data, sa, sd, mv["name"], F, True, hit=1, proc=False, flags=frozenset({"progress"}))
+        dmg = rng.choice(r["rolls"])
+        if D.hp == D.maxhp and dmg >= D.hp and (norm(D.item) == "focussash" or norm(D.ability) == "sturdy"):
+            dmg = D.hp - 1
+            if norm(D.item) == "focussash" and norm(D.ability) != "sturdy":
+                D.item = ""
+        dmg = min(dmg, D.hp)
+        self._say(st, f"  미래공격 {D.name} -{dmg}")
+        self.hp_change(st, tgt_side, D, -dmg, mv["name"])
+        if D.alive:
+            self.run_hook(st, tgt_side, D, "on_damage_taken_hp", rng)
 
     def _magic_end(self, st):
         st.magic_room = 0
@@ -1503,6 +1545,15 @@ class Engine:
                 self._say(st, "  빗나감")
                 return
         handled = False
+        if key == "perishsong":                              # 필드의 모든 포켓몬에게 카운트를 건다 (방음은 면역)
+            hit = False
+            for S_ in st.sides:
+                m_ = S_.mon
+                if m_.alive and not m_.perish and norm(m_.ability) != "soundproof":
+                    m_.perish, hit = 4, True
+            if not hit:
+                self._sfail = True
+            return
         if key == "substitute":
             cost = A.maxhp // 4
             if A.sub == 0 and A.hp > cost:
@@ -1730,7 +1781,8 @@ class Engine:
             if S.screens.get(k, 0) <= 0:
                 S.screens[k] = 8 if norm(S.mon.item) == "lightclay" else 5
         elif code == "tailwind":
-            S.screens["tailwind"] = 4
+            if S.screens.get("tailwind", 0) <= 0:                 # 이미 불고 있으면 실패 (지속 시간은 그대로)
+                S.screens["tailwind"] = 4
         elif code == "stealthrock":
             T.hazards["stealthrock"] = 1
         elif code == "spikes":
@@ -1755,6 +1807,13 @@ class Engine:
                 st.weather = None
         for i in order:
             bm = st.sides[i].mon
+            fut = st.sides[i].future
+            if fut:                                              # 미래예지: 3 -> 0 이 되는 턴 끝에 적중 (쓰러진 슬롯이면 사라진다)
+                fut["left"] -= 1
+                if fut["left"] <= 0:
+                    st.sides[i].future = None
+                    if bm.alive:
+                        self._future_hit(st, i, fut, rng)
             if not bm.alive:
                 continue
             if st.weather == "sand" and not any(t in ("Rock", "Ground", "Steel") for t in bm.types) and \
@@ -1830,6 +1889,10 @@ class Engine:
                 self.run_hook(st, i, bm, "on_damage_taken_hp", rng)
             if bm.alive and norm(bm.item) in ("toxicorb", "flameorb") and not bm.status:
                 self.try_status(st, i, bm, "tox" if norm(bm.item) == "toxicorb" else "brn", rng, src_side=i)
+            if bm.alive and bm.perish:                           # 멸망의노래: 카운트가 0 이 되면 쓰러진다
+                bm.perish -= 1
+                if bm.perish == 0:
+                    self.hp_change(st, i, bm, -bm.hp, "멸망의노래")
         for i in (0, 1):
             st.sides[i].mon.vol.discard("roost")
         for i in (0, 1):
