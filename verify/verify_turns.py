@@ -8,6 +8,7 @@ import json
 import os
 import random
 import subprocess
+import concurrent.futures as cf
 import sys
 import time
 
@@ -21,6 +22,8 @@ from ai.battle import Engine
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "out")
 os.makedirs(OUT, exist_ok=True)
+MIN_KS = 0.3
+MIN_TV = 0.0          # 효과 크기(총변동거리) 하한 — --min-tv 로 조절
 SD_WEATHER = {"sun": "sunnyday", "rain": "raindance", "sand": "sandstorm", "snow": "snowscape", None: ""}
 SD_TERRAIN = {"electric": "electricterrain", "grassy": "grassyterrain", "misty": "mistyterrain", "psychic": "psychicterrain", None: ""}
 SD_SIDE = {"reflect": "reflect", "light_screen": "lightscreen", "aurora_veil": "auroraveil", "tailwind": "tailwind", "safeguard": "safeguard"}
@@ -111,11 +114,14 @@ def compare(a_runs, b_runs, alpha):
         default = "" if k.split(":")[0] in ("st", "it", "w", "t") else 0
         va = [d.get(k, default) for d in A]
         vb = [d.get(k, default) for d in B]
+        eff = None
         if k.startswith("hp:"):
             if len(set(va)) == 1 and len(set(vb)) == 1:
                 p = 1.0 if va[0] == vb[0] else 0.0
+                eff = 1.0
             else:
-                p = stats.ks_2samp(va, vb).pvalue
+                ks = stats.ks_2samp(va, vb)
+                p, eff = ks.pvalue, ks.statistic
         else:
             cats = sorted(set(va) | set(vb), key=str)
             if len(cats) == 1:
@@ -127,8 +133,47 @@ def compare(a_runs, b_runs, alpha):
                 continue
             p = stats.chi2_contingency(tab)[1]
         if p < alpha:
-            bad.append((k, p, collections.Counter(va).most_common(4), collections.Counter(vb).most_common(4)))
+            ca2, cb2 = collections.Counter(va), collections.Counter(vb)
+            tv = eff if eff is not None else 0.5 * sum(abs(ca2[c] / len(va) - cb2[c] / len(vb)) for c in set(ca2) | set(cb2))
+            if tv >= (MIN_KS if k.startswith("hp:") else MIN_TV):
+                bad.append((k, p, ca2.most_common(4), cb2.most_common(4), tv))
     return bad
+
+
+_ENG = None
+
+
+def _init_worker():
+    global _ENG
+    _ENG = Engine(GameData(connect()))
+
+
+def _work(args):
+    sc, runs, seed, alpha, min_tv, min_ks, sd_results = args
+    global MIN_TV, MIN_KS
+    MIN_TV, MIN_KS = min_tv, min_ks
+    return compare(run_ours(_ENG, sc, runs, seed), sd_results, alpha)
+
+
+def run_showdown_parallel(scs, a, workers):
+    """시나리오를 workers 개 조각으로 나눠 node 프로세스를 동시에 실행"""
+    chunks = [scs[k::workers] for k in range(workers)]
+    procs = []
+    for k, ch in enumerate(chunks):
+        if not ch:
+            continue
+        fin, fout = os.path.join(OUT, f"turns_in_{k}.json"), os.path.join(OUT, f"turns_sd_{k}.json")
+        json.dump([dict(id=s["id"], teams=s["teams"], turns=s["turns"], runs=a.runs, seed=a.seed) for s in ch], open(fin, "w"))
+        procs.append((subprocess.Popen(["node", os.path.join(HERE, "sd_turns.js"), os.path.join(HERE, "..", "showdown"), fin, fout],
+                                       stderr=subprocess.PIPE, text=True), fout))
+    sd = {}
+    for pr, fout in procs:
+        _, err = pr.communicate()
+        if pr.returncode:
+            print(err[-2000:])
+            sys.exit(1)
+        sd.update(json.load(open(fout)))
+    return sd
 
 
 def main():
@@ -141,30 +186,35 @@ def main():
     ap.add_argument("--only")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--alpha", type=float, default=1e-5)
+    ap.add_argument("--min-tv", type=float, default=0.15, help="분포 차이(총변동거리)가 이 값 이상인 지표만 불일치로 센다")
+    ap.add_argument("--min-ks", type=float, default=0.3, help="HP 분포의 KS 통계량이 이 값 이상일 때만 불일치로 센다")
+    ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 4) // 2), help="병렬 프로세스 수")
     a = ap.parse_args()
+    global MIN_TV, MIN_KS
+    MIN_TV = a.min_tv
+    MIN_KS = a.min_ks
     conn = connect()
     data = GameData(conn)
     meta = Meta(conn, data, a.snap)
-    eng = Engine(data)
     scs = make_scenarios(meta, data, a.n, a.turns, a.seed, a.only)
     fin, fout = os.path.join(OUT, "turns_in.json"), os.path.join(OUT, "turns_sd.json")
     json.dump([dict(id=s["id"], teams=s["teams"], turns=s["turns"], runs=a.runs, seed=a.seed) for s in scs], open(fin, "w"))
     t0 = time.time()
-    r = subprocess.run(["node", os.path.join(HERE, "sd_turns.js"), os.path.join(HERE, "..", "showdown"), fin, fout], capture_output=True, text=True)
-    if r.returncode:
-        print(r.stderr[-2000:])
-        sys.exit(1)
-    sd = json.load(open(fout))
+    sd = run_showdown_parallel(scs, a, a.workers)
     t1 = time.time()
     flagged, errors = [], 0
     by_move, by_ab, by_it = (collections.defaultdict(lambda: [0, 0]) for _ in range(3))
+    todo = []
     for s in scs:
         res = sd[s["id"]]
         if "error" in res:
             errors += 1
             print("SD error:", s["id"], res["error"][:200])
             continue
-        bad = compare(run_ours(eng, s, a.runs, a.seed), res["results"], a.alpha)
+        todo.append((s, (s, a.runs, a.seed, a.alpha, a.min_tv, a.min_ks, res["results"])))
+    with cf.ProcessPoolExecutor(max_workers=a.workers, initializer=_init_worker) as ex:
+        bads = list(ex.map(_work, [t[1] for t in todo], chunksize=8))
+    for (s, _), bad in zip(todo, bads):
         lead = s["teams"][0][0]
         for tbl, key in ((by_ab, norm(lead["ability"])), (by_it, norm(lead["item"])), (by_move, s["key"])):
             tbl[key][0] += 1
@@ -189,9 +239,10 @@ def main():
             t0_, t1_ = s["teams"][0][0], s["teams"][1][0]
             print(f"\n== {s['id']}: {t0_['sid']}({t0_['ability']},{t0_['item']}) {s['turns'][0][0]} {t0_['moves']} "
                   f"vs {t1_['sid']}({t1_['ability']},{t1_['item']}) {s['turns'][0][1]} {t1_['moves']}")
-            for k, p, x, y in bad[:6]:
+            for k, p, x, y, tv in bad[:6]:
                 print(f"   {k}: p={p:.1e}\n     ours={x}\n     SD  ={y}")
     print(f"\n상세: {OUT}/turns_mismatch.json")
 
 
-main()
+if __name__ == "__main__":
+    main()

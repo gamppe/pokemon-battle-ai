@@ -35,13 +35,15 @@ function summary(battle) {
   return {mons, act, sc, w: battle.field.weather || '', t: battle.field.terrain || '', win: winner};
 }
 
+// 인접한 시드가 상관된 난수열을 내지 않도록 섞는다
+function mix(x) { x = (x ^ (x >>> 16)) >>> 0; x = Math.imul(x, 0x45d9f3b) >>> 0; x = (x ^ (x >>> 16)) >>> 0; x = Math.imul(x, 0x45d9f3b) >>> 0; return (x ^ (x >>> 16)) >>> 0; }
 const out = {};
 for (const sc of scenarios) {
   const results = [];
   let err = null;
   for (let r = 0; r < sc.runs; r++) {
     try {
-      const battle = new Battle({formatid: FORMAT, seed: [r + 1, (sc.seed || 7) * 13 + 1, 3, 4],
+      const battle = new Battle({formatid: FORMAT, seed: [mix(r * 4 + 1 + (sc.seed || 7) * 100003), mix(r * 4 + 2 + (sc.seed || 7) * 100003), mix(r * 4 + 3 + (sc.seed || 7) * 100003), mix(r * 4 + 4 + (sc.seed || 7) * 100003)],
         p1: {name: 'A', team: sc.teams[0].map(mkSet)}, p2: {name: 'B', team: sc.teams[1].map(mkSet)}});
       if (battle.requestState === 'teampreview') battle.makeChoices('team 123', 'team 123');
       const ids = ['p1', 'p2'];
@@ -53,7 +55,8 @@ for (const sc of scenarios) {
           for (let i = 0; i < 2; i++) {
             if (!need[i]) continue;
             const side = battle.sides[i];
-            const alive = side.pokemon.filter(p => !p.fainted && !p.isActive).map(p => Number(p.name)).sort((a, b) => a - b);
+            const rev = side.slotConditions && side.slotConditions[0] && side.slotConditions[0]['revivalblessing'];
+            const alive = side.pokemon.filter(p => rev ? p.fainted : (!p.fainted && !p.isActive)).map(p => Number(p.name)).sort((a, b) => a - b);
             if (alive.length) battle.choose(ids[i], 'switch ' + posOf(side, alive[0]));
             else battle.choose(ids[i], 'pass');
           }
