@@ -1,0 +1,29 @@
+# ── 제3자 원본/캐시 (etl/download_sources.py, etl/fetch.py 로 다시 받을 수 있음; 재배포하지 않음) ──
+etl/cache/
+etl/cache_za/
+etl/cache_sd_*
+etl/breakable_abilities.json
+etl/champ_*.json
+etl/*.log
+
+# ── Showdown 클론/빌드 (README 의 안내대로 별도 설치) ──
+showdown/
+node_modules/
+
+# ── 검증/분석 산출물 (스크립트로 다시 만들 수 있음) ──
+verify/out/
+review/
+
+# ── Python / 환경 / 에디터 / OS ──
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.*
+*.log
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
