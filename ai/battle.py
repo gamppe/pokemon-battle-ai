@@ -1445,7 +1445,7 @@ class Engine:
             return
         if key == "curse":
             if "Ghost" in A.types:
-                if D.sub == 0 and "curse" not in D.vol and A.hp > 1:
+                if "curse" not in D.vol and A.hp > 1:                  # bypasssub: 대타가 있어도 걸린다
                     self.hp_change(st, i, A, -(A.maxhp // 2), "저주")
                     D.vol.add("curse")
             else:
