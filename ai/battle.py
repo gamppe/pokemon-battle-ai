@@ -534,8 +534,6 @@ class Engine:
         if code == "frz":
             bm.frz_n = 3
         bm.status = code
-        if code == "slp":
-            bm.rampage = 0                                  # 잠들면 난동부리기 잠금이 (혼란 없이) 풀린다 (lockedmove onResidual)
         bm.tox = 1 if code == "tox" else 0
         self._say(st, f"  {bm.name} → {code}")
         self._status_item_cure(st, bm, code)
@@ -1326,6 +1324,7 @@ class Engine:
                 continue
             if not D.busted and norm(D.ability) == "disguise" and D.sid == "mimikyu" and norm(A.ability) not in MOLD_BREAKERS:      # 탈 (첫 피격 무효, 최대 HP의 1/8 손해)
                 D.busted = True
+                D.types = list(self.data.pokemon[D.sid]["types"])      # 폼 체인지(Mimikyu-Busted)로 타입이 원래대로 돌아간다
                 self.hp_change(st, o, D, -max(1, D.maxhp // 8), "탈")
                 self._say(st, "  탈 벗겨짐")
                 landed += 1
@@ -2069,6 +2068,8 @@ class Engine:
                 bm.yawn -= 1
                 if bm.yawn == 0 and bm.alive:
                     self.try_status(st, i, bm, "slp", rng)
+            if bm.alive and bm.status == "slp":
+                bm.rampage = 0                              # 잠든 채 턴이 끝나면 난동부리기 잠금이 (혼란 없이) 풀린다 (lockedmove onResidual)
             if bm.alive and "curse" in bm.vol and norm(bm.ability) != "magicguard":
                 self.hp_change(st, i, bm, -max(1, bm.maxhp // 4), "저주")
             if bm.alive and bm.trap and bm.trap_src and (
