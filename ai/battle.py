@@ -639,6 +639,8 @@ class Engine:
                 if bm.boosts[k] < 0:
                     bm.boosts[k] = 0
             bm.item = ""
+        if bm.alive and bm.item:                                  # 등장하자마자 HP 조건을 만족하면 열매를 먹는다 (시트러스 등, Update 이벤트)
+            self.run_hook(st, side, bm, "on_damage_taken_hp", rng, only="item")
 
     def _terrain_seeds(self, st, rng):
         for i in (0, 1):
@@ -799,6 +801,16 @@ class Engine:
         return p
 
     # ───────────────────────── 행동 수행 ─────────────────────────
+    def _confusion_damage(self, bm, rng):
+        """혼란 자해: 위력 40 의 무속성 물리 공식 (공격/방어 스탯과 단계만 반영, 난수 85~100%) -- Showdown getConfusionDamage"""
+        m = make_mon(self.data, self.spec_of(bm))
+
+        def stage(v, b):
+            return v * (2 + b) // 2 if b >= 0 else v * 2 // (2 - b)
+        atk, dfn = stage(m.stats["atk"], bm.boosts.get("atk", 0)), stage(m.stats["def"], bm.boosts.get("def", 0))
+        base = 22 * 40 * atk // dfn // 50 + 2
+        return max(1, base * (100 - rng.randrange(16)) // 100)
+
     def _can_act(self, st, i, bm, rng):
         if bm.status == "slp":
             bm.sleep -= 1
@@ -822,8 +834,8 @@ class Engine:
             bm.confusion -= 1
             if bm.confusion <= 0:
                 bm.vol.discard("confusion")
-            elif rng.random() < 1 / 3:
-                self.hp_change(st, i, bm, -min(bm.hp, max(1, bm.maxhp // 10)), "혼란")
+            elif rng.random() < 0.33:                       # Showdown: randomChance(33, 100)
+                self.hp_change(st, i, bm, -min(bm.hp, self._confusion_damage(bm, rng)), "혼란")
                 return False
         if bm.status == "par" and rng.random() < 0.125:       # 챔피언스: 행동 불가 1/8
             return False
@@ -1753,13 +1765,16 @@ class Engine:
                 self._unsup(f"{kind}:{e['code']}")
         table = next((r["params"]["table"] for r in mv["rules"] if r["type"] == "heal_move" and "table" in r["params"]), None)
         if (mv["heal"] or table) and A.alive:
-            frac = mv["heal"] / 100
-            if table:
+            if table:       # 날씨에 따라 비율이 바뀌는 회복(아침햇살 등): Showdown 의 modify -- 4096 기준 고정소수점, 0.5 는 내림
                 w_ = "sun" if any(r["code"] == "treat_weather_as:sun" for r in self.data.ability_fx.get(norm(A.ability), [])) else st.weather
                 frac = table.get(w_ or "default", table["default"])
                 if abs(frac - 0.667) < 1e-3:
-                    frac = 2 / 3
-            self.hp_change(st, i, A, math.floor(A.maxhp * frac), "회복")
+                    frac = 0.667
+                mod = math.floor(frac * 4096)
+                amount = (math.floor(A.maxhp * mod) + 2047) // 4096
+            else:           # 고정 비율 회복(회복 등): Math.round (0.5 는 올림)
+                amount = math.floor(A.maxhp * mv["heal"] / 100 + 0.5)
+            self.hp_change(st, i, A, amount, "회복")
         for r in mv["rules"]:
             if r["type"] == "extra_effect" and r["params"].get("effect") == "full_heal_and_sleep":
                 sleepless = norm(A.ability) in ("insomnia", "vitalspirit", "sweetveil") or (
