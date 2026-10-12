@@ -531,6 +531,8 @@ class Engine:
         if code == "frz":
             bm.frz_n = 3
         bm.status = code
+        if code == "slp":
+            bm.rampage = 0                                  # 잠들면 난동부리기 잠금이 (혼란 없이) 풀린다 (lockedmove onResidual)
         bm.tox = 1 if code == "tox" else 0
         self._say(st, f"  {bm.name} → {code}")
         self._status_item_cure(st, bm, code)
@@ -714,11 +716,11 @@ class Engine:
             first_only = set()
         first_only |= no_revive | no_sound
         if bm.charge:
-            return [("m", next(k for k, m in enumerate(moves) if norm(m) == bm.charge))] + self._switch_acts(st, side)
+            return [("m", next(k for k, m in enumerate(moves) if norm(m) == bm.charge))]       # 두 턴 기술의 충전 중에는 교체 불가 (Showdown 에서 확인)
         if bm.rampage and bm.last_move:
             ks = [k for k, m in enumerate(moves) if norm(m) == bm.last_move]
             if ks:
-                return [("m", ks[0])] + self._switch_acts(st, side)       # 기술이 잠겨도 교체는 가능 (Showdown 은 trapped 일 때만 막는다)
+                return [("m", ks[0])]
         if bm.encore and bm.encore_move:
             ks = [k for k, m in enumerate(moves) if norm(m) == bm.encore_move]
             if ks:
