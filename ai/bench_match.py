@@ -14,17 +14,20 @@ from .meta import Meta
 from .observe import ObsEngine
 from .policy import greedy_action, make_switch_policy
 from .search import nash_hidden, pick
+from .search_value import ValueEvaluator, nash_value_hidden
 from .teams import MetaTeams, ReplayTeams
 
 _G = {}
 
 
-def _init(snap, teams):
+def _init(snap, teams, ckpt=None):
     conn = connect()
     data = GameData(conn)
     meta = Meta(conn, data, snap)
     src = ReplayTeams(conn, data, meta) if teams == "replay" else MetaTeams(meta)
-    _G.update(data=data, meta=meta, eng=ObsEngine(data), src=src)
+    eng = ObsEngine(data)
+    ev = ValueEvaluator(eng, ckpt, os.path.join(os.path.dirname(ckpt), "vocab.json"), device="cpu") if ckpt else None
+    _G.update(data=data, meta=meta, eng=eng, src=src, ev=ev)
 
 
 class Player:
@@ -48,6 +51,9 @@ class Player:
         if self.kind == "flat":
             ev = evaluate_hidden(eng, st, me, alive, n_worlds=w, rollouts=r, seed=self.rng.randrange(10 ** 9))
             return max(ev, key=ev.get)
+        if self.kind == "nashv":          # 가치망 1턴 탐색 + 내시 균형
+            strat = nash_value_hidden(eng, _G["ev"], st, me, alive, worlds=w, samples=r, seed=self.rng.randrange(10 ** 9))
+            return pick(strat, self.rng, self.params.get("pick", "sample"))
         if self.kind == "nash":
             strat = nash_hidden(eng, st, me, alive, worlds=w, rollouts=r, seed=self.rng.randrange(10 ** 9))
             return pick(strat, self.rng, self.params.get("pick", "sample"))
@@ -113,7 +119,8 @@ def main():
     ap.add_argument("--pick", default="sample", choices=["sample", "max"])
     ap.add_argument("--snap", type=int, default=33)
     ap.add_argument("--teams", default="meta", choices=["meta", "replay"])
-    ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 4) // 2))
+    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--ckpt", default="data/value_v2/value_net.pt", help="nashv 에이전트가 쓸 가치망")
     a = ap.parse_args()
     params = dict(worlds=a.worlds, rollouts=a.rollouts, pick=a.pick)
     jobs = []
@@ -121,7 +128,7 @@ def main():
         jobs.append(((a.a, a.b), 2000 + g, params))      # A 가 0번 자리
         jobs.append(((a.b, a.a), 2000 + g, params))      # A 가 1번 자리 (팀은 그대로)
     wins, n, errs = 0.0, 0, 0
-    with cf.ProcessPoolExecutor(max_workers=a.workers, initializer=_init, initargs=(a.snap, a.teams)) as ex:
+    with cf.ProcessPoolExecutor(max_workers=a.workers, initializer=_init, initargs=(a.snap, a.teams, a.ckpt)) as ex:
         for k, (kinds, g, res) in enumerate(ex.map(play, jobs, chunksize=1)):
             if isinstance(res, str):
                 errs += 1
