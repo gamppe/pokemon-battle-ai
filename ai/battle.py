@@ -903,13 +903,13 @@ class Engine:
         base = 22 * 40 * atk // dfn // 50 + 2
         return max(1, base * (100 - rng.randrange(16)) // 100)
 
-    def _can_act(self, st, i, bm, rng):
+    def _can_act(self, st, i, bm, rng, mv=None):
         if bm.status == "slp":
             bm.sleep -= 1
             if bm.sleep <= 0:
                 bm.status = None
                 self._say(st, f"  {bm.name} 일어남")
-            else:
+            elif not (mv and norm(mv["name"]) in ("sleeptalk", "snore")):          # 잠꼬대/코골기는 자는 중에도 쓸 수 있다
                 return False
         if bm.status == "frz":                       # 챔피언스: 시도마다 카운트 -1, 0 이 되거나 25% 확률로 해동
             bm.frz_n -= 1
@@ -957,7 +957,7 @@ class Engine:
         if norm(mname) != "destinybond":
             bm.db_pending = False
         bm.prev_failed, bm.last_failed = bm.last_failed, True            # 성공 지점에서 False 로 바꾼다 (자폭/심술/고집 등 '직전 기술 실패' 조건용)
-        if not self._can_act(st, i, bm, rng):
+        if not self._can_act(st, i, bm, rng, mv):
             bm.db_pending = False                           # 기술이 중단되면 Destiny Bond 도 풀린다 (onMoveAborted)
             if mv["type"] == "Electric":
                 bm.charged = 0                              # 충전도 전기 기술이 중단되면 해제된다 (onMoveAborted)
@@ -1684,6 +1684,18 @@ class Engine:
         o = 1 - i
         key = norm(mv["name"])
         self._sfail = False                         # 실패하면 True -> 직전 기술 실패 조건(Temper Flare 등)과 Stomping Tantrum 에 쓴다
+        if key == "sleeptalk":                      # 자는 동안 자신의 기술 중 하나를 무작위로 쓴다 (불러 쓸 수 없는 기술 제외)
+            if A.status != "slp":
+                self._sfail = True
+                return
+            cand = [m for m in A.spec["moves"] if norm(m) in self.data.moves and not ({"nosleeptalk", "charge"} & set(self.data.moves[norm(m)]["flags"]))]
+            if not cand:
+                self._sfail = True
+                return
+            pick = rng.choice(cand)
+            self._say(st, f"  잠꼬대 -> {self.data.moves[norm(pick)]['name']}")
+            self._run_move(st, i, self.data.moves[norm(pick)], norm(pick), self._acts, rng, self._policy)
+            return
         if key == "copycat":                        # 전투 전체에서 직전에 쓰인 기술을 그대로 쓴다 (불러 쓸 수 없는 기술이면 실패)
             lm = st.lastmove_any
             if lm and lm in self.data.moves and "failcopycat" not in self.data.moves[lm]["flags"] and lm != "copycat":
