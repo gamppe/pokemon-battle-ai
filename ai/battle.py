@@ -14,6 +14,8 @@ from .gamedata import norm
 
 SCREENS = ("reflect", "light_screen", "aurora_veil")
 PROTECT_MOVES = {"protect", "detect", "banefulbunker", "spikyshield", "kingsshield", "burningbulwark", "silktrap", "obstruct"}
+# 연속 사용 카운터(stall)를 올리는 기술. 퀵가드/와이드가드는 항상 성공하지만 카운터는 올린다
+STALL_MOVES = PROTECT_MOVES | {"endure", "quickguard", "wideguard"}
 CHOICE = {"choiceband", "choicespecs", "choicescarf"}
 WEATHER_ROCK = {"sun": "heatrock", "rain": "damprock", "sand": "smoothrock", "snow": "icyrock"}
 CONTACT_PUNISH = {"spikyshield": ("dmg", 1 / 8), "banefulbunker": ("status", "psn"), "burningbulwark": ("status", "brn"),
@@ -134,6 +136,7 @@ class Engine:
             target="randomNormal", effects=[]))
         self._landed = False
         self._pending = []
+        self._later, self._starts = [], [None, None]      # 이번 턴에 아직 행동할 쪽 (보호 계열의 '마지막이면 실패' 판정용)
         self._rng = random.Random(0)
         self._policy = None
         self._dmg_cache = {}
@@ -681,6 +684,8 @@ class Engine:
             m.vol.discard("flinch")
             m.vol.discard("protecting")
             m.vol.discard("enduring")
+            m.vol.discard("quickguard")
+            m.vol.discard("wideguard")
             for k in list(m.vol):
                 if k in CONTACT_PUNISH:
                     m.vol.discard(k)
@@ -698,13 +703,14 @@ class Engine:
                 movers.append((i, self._priority(st, i, mv) if mv else 0, self.speed_of(st, i), rng.random()))
         movers.sort(key=lambda x: (-x[1], (x[2] if st.trick_room else -x[2]), x[3]))
         starts = [st.sides[0].active, st.sides[1].active]
-        for (i, pr, spd, _) in movers:
+        for n, (i, pr, spd, _) in enumerate(movers):
             if st.sides[i].active != starts[i]:
                 continue
             if st.winner is not None:
                 break
             if not st.sides[i].mon.alive or acts[i][0] == "s":
                 continue
+            self._later, self._starts = [m_[0] for m_ in movers[n + 1:]], starts
             self._do_action(st, i, acts[i], acts, rng, switch_policy)
             pend, self._pending = self._pending, []
             for fn in pend:
@@ -841,7 +847,7 @@ class Engine:
                 self._say(st, "  충전")
                 return
         bm.used.add(norm(mname))
-        if norm(mv["name"]) not in PROTECT_MOVES:
+        if norm(mv["name"]) not in STALL_MOVES:
             bm.protect_n = 0
         if not self._use_condition_ok(st, i, mv, acts):
             return
@@ -863,6 +869,11 @@ class Engine:
             self._say(st, "  사이코필드가 선공기를 막음")
             return
         if foe_target and self._ability_blocks(st, i, o, mv, rng):
+            return
+        if foe_target and "protect" in mv["flags"] and (
+                ("quickguard" in D.vol and self._priority(st, i, mv) > 0) or
+                ("wideguard" in D.vol and mv["target"] in ("allAdjacent", "allAdjacentFoes"))):
+            self._say(st, "  막혔다")
             return
         if "protecting" in D.vol and "protect" in mv["flags"] and foe_target and not (
                 mv["category"] == "status" and any(k in D.vol for k in ("kingsshield", "silktrap", "obstruct"))):
@@ -1315,10 +1326,22 @@ class Engine:
         else:
             self._unsup(f"{k}:{code}")
 
+    def _will_act(self, st, i):
+        return any(j != i and st.sides[j].mon.alive and st.sides[j].active == self._starts[j] for j in self._later)
+
     def _status_move(self, st, i, mv, rng, bounced=False):
         A, D = st.sides[i].mon, st.sides[1 - i].mon
         o = 1 - i
         key = norm(mv["name"])
+        if key in ("endure", "quickguard", "wideguard") or key in PROTECT_MOVES:
+            if not self._will_act(st, i):            # 이번 턴에 뒤에 행동할 상대가 없으면 실패. stall 이 갱신되지 않으므로 다음 턴엔 카운터가 사라진다
+                self._say(st, "  실패 (마지막 행동)")
+                A.protect_n = 0
+                return
+        if key in ("quickguard", "wideguard"):
+            A.vol.add(key)
+            A.protect_n += 1
+            return
         if key == "endure":
             if rng.random() < 1 / (3 ** min(A.protect_n, 5)):
                 A.vol.add("enduring")
