@@ -19,7 +19,8 @@ STALL_MOVES = PROTECT_MOVES | {"endure", "quickguard", "wideguard"}
 CHOICE = {"choiceband", "choicespecs", "choicescarf"}
 WEATHER_ROCK = {"sun": "heatrock", "rain": "damprock", "sand": "smoothrock", "snow": "icyrock"}
 CONTACT_PUNISH = {"spikyshield": ("dmg", 1 / 8), "banefulbunker": ("status", "psn"), "burningbulwark": ("status", "brn"),
-                  "kingsshield": ("boost", ("atk", -1)), "silktrap": ("boost", ("spe", -1)), "obstruct": ("boost", ("def", -2))}
+                  "kingsshield": ("boost", ("atk", -1)), "silktrap": ("boost", ("spe", -1)), "obstruct": ("boost", ("def", -2)),
+                  "beakblast": ("status", "brn")}
 STATUS_IMMUNE_TYPE = {"par": "Electric", "brn": "Fire", "frz": "Ice"}
 NON_FOE_TARGETS = {"self", "allySide", "foeSide", "all", "allyTeam", "allies", "adjacentAlly", "adjacentAllyOrSelf"}
 # 변신한 포켓몬에서는 효과가 꺼지는 특성 (Showdown 의 notransform 플래그)
@@ -765,6 +766,8 @@ class Engine:
                 bm = st.sides[i].mon
                 mv = self.data.moves[norm(bm.spec["moves"][acts[i][1]])] if acts[i][0] == "m" else (
                     self.data.moves["struggle"] if acts[i][0] == "t" else None)
+                if mv and mv["name"].lower().replace(" ", "") == "beakblast":
+                    bm.vol.add("beakblast")      # 행동 전 대기 중 접촉 공격을 받으면 공격자를 화상 (턴 시작 시 설정)
                 movers.append((i, self._priority(st, i, mv) if mv else 0, self.speed_of(st, i), rng.random()))
         movers.sort(key=lambda x: (-x[1], (x[2] if st.trick_room else -x[2]), x[3]))
         starts = [st.sides[0].active, st.sides[1].active]
@@ -1384,6 +1387,8 @@ class Engine:
             D.item = ""
         if norm(D.ability) in ("electromorphosis", "windpower"):      # 맞으면 충전 상태 (onDamagingHit -> addVolatile('charge'))
             D.charged = 2
+        if "beakblast" in D.vol and "contact" in mv["flags"] and st.sides[i].mon.alive:      # 부리캐논 대기 중 접촉 -> 공격자 화상 (타마다)
+            self.try_status(st, i, st.sides[i].mon, "brn", rng, src_side=o)
         self.run_hook(st, o, D, "on_hit_taken", rng, mv=mv, dmg=dmg, foe_side=i)
         if D.alive:
             if not defer:
@@ -1612,6 +1617,22 @@ class Engine:
                 self._say(st, "  빗나감")
                 return
         handled = False
+        if key in ("soak", "magicpowder", "forestscurse", "trickortreat"):                 # 대상의 타입 변경 (이미 같은 상태면 실패)
+            if D.sub > 0:
+                self._sfail = True
+                return
+            new_t, add = {"soak": ("Water", False), "magicpowder": ("Psychic", False), "forestscurse": ("Grass", True), "trickortreat": ("Ghost", True)}[key]
+            if (add and new_t in D.types) or (not add and D.types == [new_t]) or D.sid in ("arceus", "silvally") or norm(D.ability) == "rkssystem":
+                self._sfail = True
+                return
+            D.types = ([t for t in D.types if t != "Typeless"] + [new_t]) if add else [new_t]
+            return
+        if key == "reflecttype":
+            if not D.types or D.sid in ("arceus", "silvally"):
+                self._sfail = True
+                return
+            A.types = list(D.types)
+            return
         if key == "strengthsap":                            # 상대의 (단계 반영한) 공격 스탯만큼 회복하고 상대 공격을 1단계 내린다
             if D.sub > 0:
                 self._sfail = True
