@@ -55,6 +55,8 @@ class BMon:
     ability: str = ""
     vol: set = field(default_factory=set)
     protect_n: int = 0
+    met_last: str = ""                 # 메트로놈 도구: 직전에 쓴 기술 / 연속 사용 횟수
+    met_n: int = 0
     active_turns: int = 0
     moves_made: int = 0
     locked: str | None = None
@@ -213,6 +215,8 @@ class Engine:
             fl.add("user_moves_after_target")
         if A.prev_failed:
             fl.add("last_move_failed")
+        if norm(A.item) == "metronome":
+            fl.add(f"metronome:{min(A.met_n, 5)}")
         if "flashfire" in A.vol:
             fl.add("flash_fire_active")
         fl.add(f"times_attacked:{A.times_attacked}")
@@ -337,7 +341,9 @@ class Engine:
                 d = dmg if code == "equal_to_last_damage" else max(1, math.floor(tm.maxhp * _frac(val) + 1e-9))
                 self.hp_change(st, tside, tm, -d, src)
         elif kind == "heal_frac":
-            if tm.alive:
+            if src.startswith("item:") and tm.healblock and self._is_consumable(bm.item):
+                applied = False                    # 회복 열매는 힐블록 중에는 먹지 않는다 (onTryEatItem 이 TryHeal 을 확인)
+            elif tm.alive:
                 self.hp_change(st, tside, tm, max(1, math.floor(tm.maxhp * _frac(val) + 1e-9)), src)
         elif kind == "heal_fixed":
             if tm.alive:
@@ -548,7 +554,8 @@ class Engine:
             S.active = to
         bm = S.mon
         bm.active_turns, bm.moves_made, bm.moved, bm.used = 0, 0, False, set()
-        bm.taunt = bm.stockpile = bm.yawn = bm.encore = bm.healblock = bm.rampage = bm.throat = 0
+        bm.taunt = bm.stockpile = bm.yawn = bm.encore = bm.healblock = bm.rampage = bm.throat = bm.met_n = 0
+        bm.met_last = ""
         bm.last_move = ""
         if passed:
             bm.boosts, bm.sub, bm.vol = passed[0], passed[1], set(passed[2])
@@ -604,6 +611,11 @@ class Engine:
                 continue
             self.apply_row(st, ("item:" if src == "item" else "ability:") + r["label"].split(":", 1)[1], r, side, bm, rng)
         self._flush_pending()
+        if bm.alive and norm(bm.item) == "whiteherb" and any(v < 0 for v in bm.boosts.values()):      # 배턴터치로 받은 능력 하락 등 (onStart)
+            for k in list(bm.boosts):
+                if bm.boosts[k] < 0:
+                    bm.boosts[k] = 0
+            bm.item = ""
 
     def _terrain_seeds(self, st, rng):
         for i in (0, 1):
@@ -824,6 +836,14 @@ class Engine:
             return
         if norm(bm.item) in CHOICE:
             bm.locked = mname
+        if norm(bm.item) != "metronome":
+            bm.met_n, bm.met_last = 0, ""
+        elif "callsMove" not in mv["flags"]:                 # Showdown 메트로놈 도구의 onTryMove: 같은 기술을 직전에 성공했으면 연속 횟수 +1
+            if bm.met_last == norm(mv["name"]) and not bm.prev_failed:
+                bm.met_n += 1
+            else:
+                bm.met_n = 0
+            bm.met_last = norm(mv["name"])
         bm.moved = True
         bm.prev_move = bm.last_move
         if norm(mname) not in ("encore",):
@@ -885,6 +905,10 @@ class Engine:
                 elif r["type"] == "fail_penalty" and r["params"].get("hp_frac") and bm.alive:
                     self.hp_change(st, i, bm, -math.floor(bm.maxhp * r["params"]["hp_frac"]), "크래시")
             return
+        if foe_target and any(r["type"] == "extra_effect" and r["params"].get("effect") == "shatter_screens" for r in mv["rules"]):
+            for k in ("reflect", "light_screen", "aurora_veil"):         # onTryHit: 명중/면역/대타보다 먼저 상대 진영의 벽을 부순다
+                if st.sides[o].screens.pop(k, None):
+                    self._say(st, f"  {k} 파괴")
         if mv["category"] == "status" and mv["bp"] == 0:
             self._status_move(st, i, mv, rng)
             bm.last_failed = False
@@ -894,6 +918,9 @@ class Engine:
             bm.rampage = 0
             if mv["name"].lower() in ("jump kick", "high jump kick"):
                 self.hp_change(st, i, bm, -bm.maxhp // 2, "크래시")
+            for r in mv["rules"]:
+                if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and bm.alive:
+                    self.hp_change(st, i, bm, -math.floor(bm.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
             return
         self._damage_move(st, i, o, mv, rng, switch_policy)
         if self._landed:
@@ -1095,7 +1122,7 @@ class Engine:
             if D.sub > 0 and "bypasssub" not in mv["flags"] and norm(A.ability) != "infiltrator":
                 d = min(dmg, D.sub)
                 D.sub -= d
-                if D.sub <= 0 and norm(D.item) == "airballoon":
+                if norm(D.item) == "airballoon":            # 대타가 깨지지 않아도 기술로 피해를 주면 풍선이 터진다 (onAfterSubDamage)
                     D.item = ""
                 total += d
                 landed += 1
@@ -1176,7 +1203,7 @@ class Engine:
         if "recharge" in mv["flags"]:
             A.recharge = True
         for r in mv["rules"]:
-            if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and A.alive:
+            if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and A.alive and total:
                 self.hp_change(st, i, A, -math.floor(A.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
             elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard" and not hit_sub:
                 self._side_condition(st, o, {"stealth_rock": "stealthrock"}.get(r["params"]["hazard"], r["params"]["hazard"]), swap=True)
@@ -1305,10 +1332,12 @@ class Engine:
                              for r in self.data.ability_fx.get(norm(tgt.ability), []) if r["hook"] == "immunity")
                 if tgt.taunt == 0 and not immune:
                     tgt.taunt = 3 + (1 if tgt.active_turns and tgt.moved else 0)
+                    self._mental_herb(tgt)
             elif code == "throatchop":
                 tgt.throat = 2
             elif code == "healblock":
                 tgt.healblock = 5 if e["trigger_type"] == "primary" else 2
+                self._mental_herb(tgt)
             elif code == "destinybond":
                 tgt.vol.add("destinybond")
             elif code == "stockpile":
@@ -1325,6 +1354,12 @@ class Engine:
                 self._unsup("volatile:" + code)
         else:
             self._unsup(f"{k}:{code}")
+
+    def _mental_herb(self, bm):
+        """멘탈허브: 도발/앙코르/힐블록 등이 걸리면 곧바로 풀고 소모한다 (onUpdate)"""
+        if bm.alive and norm(bm.item) == "mentalherb" and (bm.taunt or bm.encore or bm.healblock):
+            bm.taunt = bm.encore = bm.healblock = 0
+            bm.item = ""
 
     def _will_act(self, st, i):
         return any(j != i and st.sides[j].mon.alive and st.sides[j].active == self._starts[j] for j in self._later)
@@ -1455,6 +1490,7 @@ class Engine:
             if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.encore and D.last_move and D.last_move not in ("encore",) and \
                     "failencore" not in self.data.moves[D.last_move]["flags"]:
                 D.encore = 3
+                self._mental_herb(D)
             return
         if key == "haze":
             A.boosts, D.boosts = {}, {}
@@ -1638,7 +1674,7 @@ class Engine:
                             break
             if bm.alive and norm(bm.item) == "blacksludge":
                 self.hp_change(st, i, bm, max(1, bm.maxhp // 16) if "Poison" in bm.types else -max(1, bm.maxhp // 8), "검은진흙")
-            if bm.alive and "leechseed" in bm.vol and norm(bm.ability) != "magicguard":
+            if bm.alive and "leechseed" in bm.vol and norm(bm.ability) != "magicguard" and st.sides[1 - i].mon.alive:    # 씨를 뿌린 쪽이 쓰러졌으면 피해 없음
                 d = max(1, bm.maxhp // 8)
                 self.hp_change(st, i, bm, -d, "씨뿌리기")
                 src = st.sides[1 - i].mon

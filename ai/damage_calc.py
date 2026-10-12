@@ -30,8 +30,8 @@ class Chain:
     def __init__(self):
         self.mod = 1.0
 
-    def mul(self, value, label=None):
-        nxt = FIXED_BY_LABEL.get(label)
+    def mul(self, value, label=None, fixed=None):
+        nxt = fixed if fixed is not None else FIXED_BY_LABEL.get(label)
         if nxt is None:
             nxt = FIXED.get(round(value, 4)) if isinstance(value, float) else None
         nxt = nxt if nxt is not None else tr(value * 4096)
@@ -239,6 +239,12 @@ def has_ability_code(c: Ctx, mon: Mon, code: str):
 def apply_rows(c: Ctx, chain: Chain, rows, me, foe, kinds=("mult",), cat=None):
     for r in rows:
         if r["kind"] == "special":
+            if r["code"] == "consecutive_use_boost":        # 메트로놈: 연속 사용 횟수만큼 4096 분수 배율 (4915/5734/6553/7372/8192)
+                n = next((int(x.split(":")[1]) for x in c.flags if x.startswith("metronome:")), 0)
+                if n:
+                    chain.mul(1.0, r["label"], fixed=(4096, 4915, 5734, 6553, 7372, 8192)[min(n, 5)])
+                    c.used.append(r["label"])
+                continue
             c.note_unsupported(f"{r['label']}: special {r['code']}")
             continue
         if r["kind"] not in kinds:
