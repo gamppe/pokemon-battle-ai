@@ -793,7 +793,10 @@ class Engine:
                     self.data.moves["struggle"] if acts[i][0] == "t" else None)
                 if mv and mv["name"].lower().replace(" ", "") == "beakblast":
                     bm.vol.add("beakblast")      # 행동 전 대기 중 접촉 공격을 받으면 공격자를 화상 (턴 시작 시 설정)
-                movers.append((i, self._priority(st, i, mv) if mv else 0, self.speed_of(st, i), rng.random()))
+                pr_ = self._priority(st, i, mv) if mv else 0
+                if mv and norm(bm.item) == "quickclaw" and pr_ <= 0 and rng.random() < 0.2:      # 선제공격손톱: 20% 확률로 같은 우선도 안에서 먼저 움직인다
+                    pr_ += 0.1
+                movers.append((i, pr_, self.speed_of(st, i), rng.random()))
         movers.sort(key=lambda x: (-x[1], (x[2] if st.trick_room else -x[2]), x[3]))
         starts = [st.sides[0].active, st.sides[1].active]
         for n, (i, pr, spd, _) in enumerate(movers):
@@ -1319,6 +1322,8 @@ class Engine:
                 dmg = D.hp - 1
                 if norm(D.item) == "focussash" and norm(D.ability) != "sturdy":
                     self._consume(st, D)
+            if norm(D.item) == "focusband" and dmg >= D.hp and rng.random() < 0.1:       # 기합의머리띠: 10% 확률로 HP 1 로 버틴다 (소모되지 않음)
+                dmg = D.hp - 1
             dmg = min(dmg, D.hp)
             self.hp_change(st, o, D, -dmg, mv["name"])
             st.last_hit[o] = dmg
