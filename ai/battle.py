@@ -207,6 +207,8 @@ class Engine:
             fl.add("user_moves_after_target")
         if A.prev_failed:
             fl.add("last_move_failed")
+        if "flashfire" in A.vol:
+            fl.add("flash_fire_active")
         fl.add(f"times_attacked:{A.times_attacked}")
         fl.add(f"fainted_allies:{sum(1 for m in st.sides[ai_].team if not m.alive)}")
         fl = frozenset(fl)
@@ -568,6 +570,11 @@ class Engine:
             return
         self._run_switch_in(st, side, bm, rng)
 
+    def _flush_pending(self):
+        pend, self._pending = self._pending, []
+        for fn in pend:
+            fn()
+
     def _run_switch_in(self, st, side, bm, rng):
         foe = st.sides[1 - side].mon
         for src, r in self.rows(bm, "switch_in"):
@@ -590,6 +597,7 @@ class Engine:
                             self.change_boost(st, 1 - side, foe, r2["code"], int(r2["value"]))
                 continue
             self.apply_row(st, ("item:" if src == "item" else "ability:") + r["label"].split(":", 1)[1], r, side, bm, rng)
+        self._flush_pending()
 
     def _terrain_seeds(self, st, rng):
         for i in (0, 1):
@@ -1073,6 +1081,8 @@ class Engine:
             if D.sub > 0 and "bypasssub" not in mv["flags"] and norm(A.ability) != "infiltrator":
                 d = min(dmg, D.sub)
                 D.sub -= d
+                if D.sub <= 0 and norm(D.item) == "airballoon":
+                    D.item = ""
                 total += d
                 landed += 1
                 hit_sub = True

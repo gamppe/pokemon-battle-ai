@@ -194,6 +194,8 @@ def cond_ok(c: Ctx, cond: dict, me: Mon, foe: Mon, label: str, cat=None):
         elif k in ("same_gender", "opposite_gender"):
             both = c.A.gender in ("M", "F") and c.D.gender in ("M", "F")
             ok = both and ((c.A.gender == c.D.gender) if k == "same_gender" else (c.A.gender != c.D.gender))
+        elif k == "flash_fire_active":
+            ok = "flash_fire_active" in c.flags
         elif k == "target_side":
             ok = v in ("all", "self_and_ally")
         else:
