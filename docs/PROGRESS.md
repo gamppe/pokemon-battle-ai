@@ -52,7 +52,11 @@
 - nashv(가치망 1턴 탐색 + 내시 균형, pick=sample) vs greedy: **48.1%** (±6.3%p, 240판) — 휴리스틱과 비슷
 - nashv vs flat(평면 몬테카를로): **47.7%** (±6.3%p) — 평면과 대등하지만 약 2배 빠름
 - nash(롤아웃 수익 행렬 + 내시 균형, pick=sample) vs flat: **31.0%** (±6.3%p) — 크게 짐. 원인 가설: ① 칸당 롤아웃 4번이라 행렬 잡음을 선형계획이 증폭 ② 혼합 전략을 확률대로 뽑아 나쁜 행동 포함 ③ 상대가 균형 플레이어가 아닌데 최악을 가정.
-  → 후속 실험(`verify/out/overnight2.log`): pick=max, flat vs greedy 보정.
+  → 후속 실험(`verify/out/overnight2.log`, 80판 x 2자리):
+  - flat vs greedy: flat **62.2%** (±7.7%p) — 평면 몬테카를로가 휴리스틱보다 강함
+  - nashv(pick=**max**) vs flat: nashv **58.1%** (±7.7%p) — 혼합 전략을 확률대로 뽑지 않고 최빈 행동을 고르면 크게 개선
+  - nash(롤아웃, pick=max) vs flat: 44.1% (±7.7%p) — sample(31.0%)보다 나아졌지만 flat 이하/동등. 칸당 롤아웃 4번의 잡음 탓으로 추정.
+  → 가치망 탐색(nashv) + pick=max 를 200판으로 재확인 중(`verify/out/overnight3.log`).
 
 ### 선출
 - 지도학습(`ai/selection.py`): 팀 단위로 학습/검증을 나누면 기준선이 2.10/3(누수 있던 값) → 1.59/3. 모델 1.66/3 (무작위 1.49/3). 리플레이의 선출은 '사람의 습관'이지 정답이 아니므로 보조로만 사용.
