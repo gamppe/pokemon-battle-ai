@@ -85,7 +85,7 @@ class GameData:
                 drain=r["drain_pct"] or 0, heal=r["heal_pct"] or 0, self_switch=bool(r["self_switch"]), force_switch=bool(r["force_switch"]),
                 self_destruct=bool(r["self_destruct"]), ohko=bool(r["ohko"]), fixed_damage=r["fixed_damage"],
                 target=r["target_override"] or r["target"],
-                effects=(eff.get(mid, {}).get(g) if r["effects_overridden"] and g in eff.get(mid, {}) else eff.get(mid, {}).get(0, [])))
+                effects=(eff.get(mid, {}).get(g, []) if r["effects_overridden"] else eff.get(mid, {}).get(0, [])))     # 재정의되고 행이 없으면 '효과 없음'(프리즈드라이 등)
         br = _rows(cur, "select params from battle_rule where rule_key='mold_breaker'")
         self.breakable = {norm(x) for x in (_cond(br[0]["params"]).get("ignores_abilities", []) if br else [])}
         # 특성/아이템 효과

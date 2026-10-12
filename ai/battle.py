@@ -58,6 +58,7 @@ class BMon:
     met_last: str = ""                 # 메트로놈 도구: 직전에 쓴 기술 / 연속 사용 횟수
     met_n: int = 0
     hid_item: str = ""                 # 매직룸 동안 숨겨 둔 도구
+    frz_n: int = 0                     # 챔피언스 얼음: 행동 시도 3번이 지나면 반드시 풀림
     disabled: str = ""                 # 봉인된 기술 / 남은 턴
     disable_n: int = 0
     active_turns: int = 0
@@ -490,7 +491,9 @@ class Engine:
         if st.terrain == "misty" and self._grounded(bm):
             return False
         if code == "slp":
-            bm.sleep = rng.randint(2, 4)             # Showdown: random(2,5) -> 쉬는 턴 1~3
+            bm.sleep = rng.choice((2, 3, 3))         # 챔피언스 모드: 1/3 확률로 2턴째에 깨어남 (쉬는 턴 1~2)
+        if code == "frz":
+            bm.frz_n = 3
         bm.status = code
         bm.tox = 1 if code == "tox" else 0
         self._say(st, f"  {bm.name} → {code}")
@@ -787,8 +790,9 @@ class Engine:
                 self._say(st, f"  {bm.name} 일어남")
             else:
                 return False
-        if bm.status == "frz":
-            if rng.random() < 0.2:
+        if bm.status == "frz":                       # 챔피언스: 시도마다 카운트 -1, 0 이 되거나 25% 확률로 해동
+            bm.frz_n -= 1
+            if bm.frz_n <= 0 or rng.random() < 0.25:
                 bm.status = None
             else:
                 return False
@@ -804,7 +808,7 @@ class Engine:
             elif rng.random() < 1 / 3:
                 self.hp_change(st, i, bm, -min(bm.hp, max(1, bm.maxhp // 10)), "혼란")
                 return False
-        if bm.status == "par" and rng.random() < 0.25:
+        if bm.status == "par" and rng.random() < 0.125:       # 챔피언스: 행동 불가 1/8
             return False
         return True
 
@@ -1481,7 +1485,7 @@ class Engine:
             dead = [m for m in st.sides[i].team if not m.alive]
             if dead:
                 m = dead[0]
-                m.hp = (m.maxhp + 1) // 2
+                m.hp = max(1, m.maxhp // 2)             # Showdown: 최대 HP 의 절반을 내림 (151 -> 75)
                 m.status = None
             return
         if key == "skillswap":
