@@ -1736,6 +1736,8 @@ class Engine:
                     bm.tox = min(15, bm.tox + 1)
                 elif bm.status == "brn":
                     self.hp_change(st, i, bm, -max(1, bm.maxhp // (32 if norm(bm.ability) == "heatproof" else 16)), "화상")
+        for i in order:              # Showdown 은 효과 종류별 순서(씨뿌리기 8, 독 9, 화상 10, 저주 12, 조임 13 ...)로 모든 포켓몬을 처리한다 -> 두 번째 패스
+            bm = st.sides[i].mon
             if bm.taunt:
                 bm.taunt -= 1
             if bm.healblock:
