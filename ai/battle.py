@@ -455,14 +455,16 @@ class Engine:
     def change_boost(self, st, side, bm, stat, n, src_side=None):
         """src_side 가 있으면 상대에게서 온 변화 (방어 특성/반격 특성 적용)"""
         ab = norm(bm.ability)
-        if ab == "contrary":
+        from_foe = src_side is not None
+        broken = from_foe and src_side != side and norm(st.sides[src_side].mon.ability) in MOLD_BREAKERS and ab in self.data.breakable      # 틀깨기는 방어 특성을 무시
+        if broken:
+            pass
+        elif ab == "contrary":
             n = -n
         elif ab == "simple":
             n *= 2
-        from_foe = src_side is not None
         if n < 0 and from_foe and bm.sub > 0:
             return 0
-        broken = from_foe and norm(st.sides[src_side].mon.ability) in MOLD_BREAKERS and ab in self.data.breakable      # 틀깨기는 방어 특성을 무시
         if n < 0 and from_foe and not broken:
             for r in self.data.ability_fx.get(ab, []):
                 if r["hook"] == "on_stat_drop" and r["kind"] == "immune" and r["code"] in ("all", stat, {"accuracy": "acc"}.get(stat, stat)):
