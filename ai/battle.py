@@ -398,7 +398,7 @@ class Engine:
                 st.terrain_turns = 8 if any(r["code"] == "extend_terrain" for r in self.data.item_fx.get(norm(bm.item), [])) else 5
                 self._terrain_seeds(st, rng)
         elif kind == "cure_status":
-            if bm.status and (code in ("any", None) or bm.status in code.split("|")):
+            if bm.status and (code in ("any", None) or "any" in code.split("|") or bm.status in code.split("|") or (bm.status == "tox" and "psn" in code.split("|"))):
                 bm.status = None
         elif kind == "volatile":
             if code == "flinch" and tm.alive and not tm.moved and norm(tm.ability) != "innerfocus":
