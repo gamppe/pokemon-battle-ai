@@ -1218,6 +1218,12 @@ class Engine:
         if A.alive and landed:
             self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="ability")
         self._secondary(st, i, o, mv, rng, hit_sub)      # 대타는 상대에게 걸리는 부가효과만 막고, 자신에게 걸리는 효과(불꽃의charge 등)는 그대로 적용
+        if key in ("bugbite", "pluck") and not hit_sub and landed and A.alive and D.item and norm(D.item).endswith("berry") \
+                and norm(D.ability) != "stickyhold":                # 벌레먹기/쪼기: 상대의 열매를 빼앗아 바로 먹고 효과를 얻는다
+            berry, own = D.item, A.item
+            D.item, A.item = "", berry
+            self.run_hook(st, i, A, "on_damage_taken_hp", rng, only="item")
+            A.item = own
         if not hit_sub:
             if key == "knockoff" and D.item and norm(D.ability) != "stickyhold" and not (
                     any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
