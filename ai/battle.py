@@ -580,7 +580,7 @@ class Engine:
         return "Flying" not in self.types_of(bm) and norm(bm.ability) not in ("levitate", "eelevate") and norm(bm.item) != "airballoon"
 
     # ───────────────────────── 교체 ─────────────────────────
-    def _switch_in(self, st, side, rng, to=None, carry=False):
+    def _switch_in(self, st, side, rng, to=None, carry=False, defer=False):
         S = st.sides[side]
         passed = None
         if to is not None:
@@ -623,25 +623,29 @@ class Engine:
         if S.heal_next and (bm.hp < bm.maxhp or bm.status):          # 체력이 가득하고 상태이상도 없으면 효과를 남겨 두었다가 다음 교체 대상에게 쓴다
             bm.hp, bm.status = bm.maxhp, None
             S.heal_next = None
-        if not self._item_is(bm, "heavydutyboots"):
-            if S.hazards.get("stealthrock"):
-                eff = 1.0
-                for t in bm.types:
-                    eff *= self.data.type_chart.get(("Rock", t), 1.0)
-                self.hp_change(st, side, bm, -math.floor(bm.maxhp * eff / 8), "스텔스록")
-            if self._grounded(bm) and bm.alive:
-                if S.hazards.get("spikes"):
-                    self.hp_change(st, side, bm, -math.floor(bm.maxhp / {1: 8, 2: 6, 3: 4}[S.hazards["spikes"]]), "압정")
-                if S.hazards.get("toxicspikes"):
-                    if "Poison" in bm.types:
-                        S.hazards.pop("toxicspikes")
-                    else:
-                        self.try_status(st, side, bm, "tox" if S.hazards["toxicspikes"] >= 2 else "psn", rng)
-                if S.hazards.get("stickyweb"):
-                    self.change_boost(st, side, bm, "spe", -1, src_side=1 - side)
-        if not bm.alive:
-            return
-        self._run_switch_in(st, side, bm, rng)
+        def effects():                                      # 해저드 + 등장 효과 (Showdown 의 runSwitch)
+            if not self._item_is(bm, "heavydutyboots"):
+                if S.hazards.get("stealthrock"):
+                    eff = 1.0
+                    for t in bm.types:
+                        eff *= self.data.type_chart.get(("Rock", t), 1.0)
+                    self.hp_change(st, side, bm, -math.floor(bm.maxhp * eff / 8), "스텔스록")
+                if self._grounded(bm) and bm.alive:
+                    if S.hazards.get("spikes"):
+                        self.hp_change(st, side, bm, -math.floor(bm.maxhp / {1: 8, 2: 6, 3: 4}[S.hazards["spikes"]]), "압정")
+                    if S.hazards.get("toxicspikes"):
+                        if "Poison" in bm.types:
+                            S.hazards.pop("toxicspikes")
+                        else:
+                            self.try_status(st, side, bm, "tox" if S.hazards["toxicspikes"] >= 2 else "psn", rng)
+                    if S.hazards.get("stickyweb"):
+                        self.change_boost(st, side, bm, "spe", -1, src_side=1 - side)
+            if not bm.alive:
+                return
+            self._run_switch_in(st, side, bm, rng)
+        if defer:                                           # 동시에 교체되면 등장 효과는 모두 나온 뒤 현재 속도 순으로 처리된다
+            return effects
+        effects()
 
     def _flush_pending(self):
         pend, self._pending = self._pending, []
@@ -822,6 +826,13 @@ class Engine:
                 break
             if len(dead) == 2:      # 동시에 쓰러졌으면 쓰러진 포켓몬의 속도가 빠른 쪽이 먼저 나온다 (나중에 나온 쪽의 날씨/필드 특성이 이김)
                 dead.sort(key=lambda i: ((1 if st.trick_room else -1) * self._fainted_speed(st, i), rng.random()))
+            if len(dead) == 2:
+                effs = [self._replace(st, i, rng, switch_policy, defer=True) for i in dead]
+                order = sorted(zip(dead, effs), key=lambda x: ((1 if st.trick_room else -1) * self.speed_of(st, x[0]), rng.random()))
+                for _, fn in order:
+                    if fn:
+                        fn()
+                continue
             for i in dead:
                 self._replace(st, i, rng, switch_policy)
         for i in (0, 1):
@@ -829,14 +840,14 @@ class Engine:
         self._check_winner(st)
         return st
 
-    def _replace(self, st, i, rng, switch_policy):
+    def _replace(self, st, i, rng, switch_policy, defer=False):
         alive = st.sides[i].alive_idx()
         if not alive:
             return
         j = switch_policy(st, i) if switch_policy else alive[0]
         if j not in alive:
             j = alive[0]
-        self._switch_in(st, i, rng, to=j)
+        return self._switch_in(st, i, rng, to=j, defer=defer)
 
     def _check_winner(self, st):
         dead = [not st.sides[i].alive_idx() for i in (0, 1)]
@@ -1480,6 +1491,9 @@ class Engine:
         A, D = st.sides[i].mon, st.sides[o].mon
         if norm(A.ability) == "sheerforce":
             return
+        if norm(mv["name"]) == "sparklingaria" and not hit_sub and D.alive and D.status == "brn" and norm(D.ability) != "shielddust":     # 상대의 화상을 치료한다
+            D.status = None
+            self._say(st, f"  {D.name} 화상 치료")
         mult = 2 if norm(A.ability) == "serenegrace" else 1
         need_raised = norm(mv["name"]) in ("alluringvoice", "burningjealousy")        # 상대가 이번 턴 능력이 올랐을 때만 (onHit 코드 조건)
         for e in mv["effects"]:
