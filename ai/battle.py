@@ -25,6 +25,10 @@ NON_FOE_TARGETS = {"self", "allySide", "foeSide", "all", "allyTeam", "allies", "
 # 변신한 포켓몬에서는 효과가 꺼지는 특성 (Showdown 의 notransform 플래그)
 NO_TRANSFORM = {"disguise", "iceface", "gulpmissile", "hungerswitch", "neutralizinggas", "protosynthesis", "quarkdrive", "terashift",
                 "zerotohero", "embodyaspectcornerstone", "embodyaspecthearthflame", "embodyaspectteal", "embodyaspectwellspring"}
+NO_TRACE = {"trace", "imposter", "illusion", "multitype", "stancechange", "schooling", "comatose", "shieldsdown", "disguise", "rkssystem", "battlebond",
+            "powerconstruct", "zenmode", "gulpmissile", "iceface", "neutralizinggas", "asone", "commander", "hungerswitch", "terashift", "zerotohero",
+            "flowergift", "forecast", "receiver", "poweroofalchemy", "powerofalchemy", "protosynthesis", "quarkdrive", "wonderguard", "poisonpuppeteer",
+            "embodyaspectcornerstone", "embodyaspecthearthflame", "embodyaspectteal", "embodyaspectwellspring"}
 NO_SWAP = {"wonderguard", "multitype", "illusion", "stancechange", "schooling", "comatose", "shieldsdown", "disguise", "rkssystem", "battlebond", "powerconstruct", "zenmode", "gulpmissile", "iceface", "neutralizinggas", "asone", "commander", "hungerswitch", "terashift", "zerotohero"}
 MULTI_ACCURACY = {"tripleaxel", "triplekick"}
 MOLD_BREAKERS = {"moldbreaker", "teravolt", "turboblaze"}
@@ -60,6 +64,8 @@ class BMon:
     hid_item: str = ""                 # 매직룸 동안 숨겨 둔 도구
     frz_n: int = 0                     # 챔피언스 얼음: 행동 시도 3번이 지나면 반드시 풀림
     busted: bool = False               # 변장이 깨진 상태 (교체해도 유지된다)
+    ate_berry: bool = False            # 열매를 먹은 적이 있다 (벨치 사용 조건; 교체하면 초기화)
+    charged: int = 0                   # 충전 상태 남은 턴 (전기흡수 등으로 맞으면 2, 다음 전기 기술 위력 x2)
     perish: int = 0                    # 멸망의노래 카운트 (4 에서 시작해 턴 끝마다 1 감소, 0 이 되면 쓰러짐)
     db_pending: bool = False           # Destiny Bond 가 걸려 있음 (다른 기술을 쓰려 하거나 기술이 중단되면 해제, 그 전에 또 쓰면 실패)
     disabled: str = ""                 # 봉인된 기술 / 남은 턴
@@ -230,6 +236,8 @@ class Engine:
             fl.add("last_move_failed")
         if norm(A.item) == "metronome":
             fl.add(f"metronome:{min(A.met_n, 5)}")
+        if A.charged:
+            fl.add("charged")
         if "flashfire" in A.vol:
             fl.add("flash_fire_active")
         fl.add(f"times_attacked:{A.times_attacked}")
@@ -322,6 +330,8 @@ class Engine:
         return True
 
     def _consume(self, st, bm):
+        if norm(bm.item).endswith("berry"):
+            bm.ate_berry = True
         bm.item = ""
 
     @staticmethod
@@ -405,6 +415,12 @@ class Engine:
                         j = self._policy(st, side) if self._policy else cand[0]
                         self._switch_in(st, side, self._rng, to=j if j in cand else cand[0])
                 self._pending.append(eject)
+                applied = False
+            elif code == "copy_foe_ability":                     # 트레이스: 등장할 때 상대 특성을 복사하고 그 특성의 등장 효과도 발동한다
+                if foe.alive and foe.ability and norm(foe.ability) not in NO_TRACE:
+                    bm.ability = foe.ability
+                    self._say(st, f"  트레이스 -> {foe.ability}")
+                    self._run_switch_in(st, side, bm, rng, only="ability")
                 applied = False
             elif code == "transform":
                 if foe.alive:
@@ -529,6 +545,8 @@ class Engine:
                 codes = (r["code"] or "").split("|")
                 if "confusion" in codes:
                     bm.vol.discard("confusion")
+                    if norm(bm.item).endswith("berry"):
+                        bm.ate_berry = True
                     bm.item = ""
                     break
 
@@ -557,6 +575,8 @@ class Engine:
                           dict(taunt=old.taunt, healblock=old.healblock, perish=old.perish, confusion=old.confusion))     # Baton Pass 로 넘어가는 상태 (noCopy 가 아닌 것)
             old.boosts, old.vol, old.locked, old.protect_n, old.recharge = {}, set(), None, 0, False
             old.perish = 0
+            old.charged = 0
+            old.ate_berry = False
             old.sub, old.charge, old.semi, old.trap = 0, None, None, 0
             if old.orig:
                 old.spec, old.sid, old.types, old.ability = old.orig
@@ -873,6 +893,8 @@ class Engine:
         bm.prev_failed, bm.last_failed = bm.last_failed, True            # 성공 지점에서 False 로 바꾼다 (자폭/심술/고집 등 '직전 기술 실패' 조건용)
         if not self._can_act(st, i, bm, rng):
             bm.db_pending = False                           # 기술이 중단되면 Destiny Bond 도 풀린다 (onMoveAborted)
+            if mv["type"] == "Electric":
+                bm.charged = 0                              # 충전도 전기 기술이 중단되면 해제된다 (onMoveAborted)
             if norm(bm.item) not in CHOICE:
                 bm.locked = None
             bm.charge, bm.semi = None, None
@@ -928,6 +950,8 @@ class Engine:
                 self._say(st, "  충전")
                 return
         self._run_move(st, i, mv, mname, acts, rng, switch_policy)
+        if mv["type"] == "Electric" and bm.charged:                 # 전기 기술을 쓰고 나면 충전 해제 (onAfterMove)
+            bm.charged = 0
         st.lastmove_any = norm(mname)                       # Copycat 용: 전투 전체에서 마지막으로 쓰인 기술
 
     def _run_move(self, st, i, mv, mname, acts, rng, switch_policy):
@@ -1066,6 +1090,8 @@ class Engine:
                 return False
             if req == "target_has_item" and not st.sides[1 - i].mon.item:
                 return False
+            if req == "user_ate_berry" and not bm.ate_berry:
+                return False
             if req == "user_asleep" and bm.status != "slp":
                 return False
             if req == "weather:snow" and st.weather != "snow":
@@ -1108,6 +1134,8 @@ class Engine:
             return True
         aab, dab = norm(A.ability), norm(D.ability)
         if aab in ("nolimit", "noguard") or dab == "noguard" or "glaiverush" in D.vol:
+            return True
+        if norm(mv["name"]) == "toxic" and "Poison" in A.types:        # 독 타입이 쓰는 맹독은 반드시 명중한다
             return True
         if mv["ohko"]:
             return rng.random() < 0.3
@@ -1221,7 +1249,7 @@ class Engine:
                 if mv["drain"] and A.alive and d:
                     self.hp_change(st, i, A, max(1, math.floor(d * _frac(mv["drain"] / 100) + 0.5)), "흡수")
                 continue
-            if not D.busted and norm(D.ability) == "disguise" and D.sid == "mimikyu":      # 탈 (첫 피격 무효, 최대 HP의 1/8 손해)
+            if not D.busted and norm(D.ability) == "disguise" and D.sid == "mimikyu" and norm(A.ability) not in MOLD_BREAKERS:      # 탈 (첫 피격 무효, 최대 HP의 1/8 손해)
                 D.busted = True
                 self.hp_change(st, o, D, -max(1, D.maxhp // 8), "탈")
                 self._say(st, "  탈 벗겨짐")
@@ -1280,7 +1308,11 @@ class Engine:
                 and norm(D.ability) != "stickyhold":                # 벌레먹기/쪼기: 상대의 열매를 빼앗아 바로 먹고 효과를 얻는다
             berry, own = D.item, A.item
             D.item, A.item = "", berry
-            self.run_hook(st, i, A, "on_damage_taken_hp", rng, only="item")
+            for hook_ in ("on_damage_taken_hp", "on_status"):         # 먹은 즉시 열매의 효과가 나온다 (HP 조건은 보지 않는다)
+                for src_, r_ in self.rows(A, hook_):
+                    if src_ == "item" and A.item == berry:
+                        self.apply_row(st, "item:" + r_["label"].split(":", 1)[1], r_, i, A, rng)
+            A.ate_berry = True
             A.item = own
         if not hit_sub:
             if key == "knockoff" and D.item and norm(D.ability) != "stickyhold" and not (
@@ -1350,6 +1382,8 @@ class Engine:
         D = st.sides[o].mon
         if norm(D.item) == "airballoon":
             D.item = ""
+        if norm(D.ability) in ("electromorphosis", "windpower"):      # 맞으면 충전 상태 (onDamagingHit -> addVolatile('charge'))
+            D.charged = 2
         self.run_hook(st, o, D, "on_hit_taken", rng, mv=mv, dmg=dmg, foe_side=i)
         if D.alive:
             if not defer:
@@ -1578,6 +1612,20 @@ class Engine:
                 self._say(st, "  빗나감")
                 return
         handled = False
+        if key == "strengthsap":                            # 상대의 (단계 반영한) 공격 스탯만큼 회복하고 상대 공격을 1단계 내린다
+            if D.sub > 0:
+                self._sfail = True
+                return
+
+            def stage_(v, b_):
+                return v * (2 + b_) // 2 if b_ >= 0 else v * 2 // (2 - b_)
+            atk = stage_(make_mon(self.data, self.spec_of(D)).stats["atk"], D.boosts.get("atk", 0))
+            gained = self.hp_change(st, i, A, atk, "힘흡수")
+            before = D.boosts.get("atk", 0)
+            self.change_boost(st, o, D, "atk", -1, src_side=i)
+            if not gained and D.boosts.get("atk", 0) == before:
+                self._sfail = True
+            return
         if key == "perishsong":                              # 필드의 모든 포켓몬에게 카운트를 건다 (방음은 면역)
             hit = False
             for S_ in st.sides:
@@ -1909,6 +1957,8 @@ class Engine:
                 bm.encore -= 1
                 if not bm.encore:
                     bm.encore_move = ""
+            if bm.charged:
+                bm.charged -= 1
             if bm.disable_n:
                 bm.disable_n -= 1
                 if not bm.disable_n:

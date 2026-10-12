@@ -519,6 +519,8 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
         apply_rows(c, ch, [r], A, D)
     for m in rule_mults:
         ch.mul(m)
+    if "charged" in c.flags and mv["type"] == "Electric":          # 충전(Charge/전기흡수) 상태: 다음 전기 기술 위력 x2
+        ch.mul(2.0)
     if norm(c.A.ability) == "supremeoverlord" and item_active_ability_ok(c):
         n = min(5, next((int(x.split(":")[1]) for x in c.flags if x.startswith("fainted_allies:")), 0))
         if n:
