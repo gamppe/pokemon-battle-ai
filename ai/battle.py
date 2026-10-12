@@ -383,7 +383,7 @@ class Engine:
             elif code == "force_attacker_switch":
                 def red(holder=bm):
                     cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
-                    if cand and holder.alive and st.sides[o].mon.alive and holder.item:
+                    if cand and holder.alive and st.sides[side].mon is holder and st.sides[o].mon.alive and holder.item:   # 보유자가 이미 끌려 나갔으면 발동하지 않음
                         holder.item = ""
                         self._switch_in(st, o, self._rng, to=self._rng.choice(cand))
                 self._pending.append(red)
@@ -664,7 +664,9 @@ class Engine:
         if bm.encore and bm.last_move:
             ks = [k for k, m in enumerate(moves) if norm(m) == bm.last_move]
             if ks:
-                acts = [("m", ks[0])]
+                k0 = ks[0]
+                unusable = k0 in first_only or norm(moves[k0]) == bm.disabled or (bm.taunt and self.data.moves[norm(moves[k0])]["category"] == "status")
+                acts = [("t", 0)] if unusable else [("m", k0)]        # 앙코르로 고정된 기술을 쓸 수 없으면 발버둥
                 if not bm.trap and norm(st.sides[1 - side].mon.ability) != "shadowtag":
                     acts += [("s", j) for j in S.alive_idx() if j != S.active]
                 return acts
@@ -812,7 +814,7 @@ class Engine:
         mname = "struggle" if act[0] == "t" else bm.spec["moves"][act[1]]
         if bm.rampage and bm.last_move:
             mname = next((m for m in bm.spec["moves"] if norm(m) == bm.last_move), mname)
-        if bm.encore and bm.last_move and norm(mname) != bm.last_move:
+        if bm.encore and bm.last_move and act[0] != "t" and norm(mname) != bm.last_move:
             mname = next((m for m in bm.spec["moves"] if norm(m) == bm.last_move), mname)
         mv = self.data.moves[norm(mname)]
         self._say(st, f"[{i}] {bm.name}: {mv['name']}")
@@ -904,10 +906,12 @@ class Engine:
                 ("quickguard" in D.vol and self._priority(st, i, mv) > 0) or
                 ("wideguard" in D.vol and mv["target"] in ("allAdjacent", "allAdjacentFoes"))):
             self._say(st, "  막혔다")
+            self._self_destruct_fail(st, i, mv)
             return
         if "protecting" in D.vol and "protect" in mv["flags"] and foe_target and not (
                 mv["category"] == "status" and any(k in D.vol for k in ("kingsshield", "silktrap", "obstruct"))):
             self._say(st, "  막혔다")
+            self._self_destruct_fail(st, i, mv)
             self._contact_punish(st, i, o, mv, rng)
             for r in mv["rules"]:
                 if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and bm.alive:
@@ -926,6 +930,7 @@ class Engine:
         if norm(mv["name"]) not in MULTI_ACCURACY and not self._hits(st, i, o, mv, rng, target_is_self):
             self._say(st, "  빗나감")
             bm.rampage = 0
+            self._self_destruct_fail(st, i, mv)
             if mv["name"].lower() in ("jump kick", "high jump kick"):
                 self.hp_change(st, i, bm, -bm.maxhp // 2, "크래시")
             for r in mv["rules"]:
@@ -1120,6 +1125,7 @@ class Engine:
                         self._say(st, "  효과 없음")
                     elif r["reason"] == "fail":
                         self._say(st, "  실패")
+                    self._self_destruct_fail(st, i, mv)
                     return
                 dmg = rng.choice(r["rolls"])
                 if r.get("mid", {}).get("moveType"):
@@ -1217,11 +1223,15 @@ class Engine:
                 self.hp_change(st, i, A, -math.floor(A.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
             elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard" and not hit_sub:
                 self._side_condition(st, o, {"stealth_rock": "stealthrock"}.get(r["params"]["hazard"], r["params"]["hazard"]), swap=True)
+        if mv["force_switch"] and not mv["self_switch"] and D.alive and not hit_sub and D.sub == 0 and norm(D.ability) != "suctioncups":
+            cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]        # 드래곤테일 등: 끌어내기가 레드카드/탈출버튼보다 먼저
+            if cand:
+                self._switch_in(st, o, rng, to=rng.choice(cand))
         pend, self._pending = self._pending, []
         for fn in pend:
             fn()
         if key == "struggle" and A.alive:
-            self.hp_change(st, i, A, -max(1, A.maxhp // 4), "발버둥")
+            self.hp_change(st, i, A, -max(1, math.floor(A.maxhp / 4 + 0.5)), "발버둥")        # Showdown: Math.round(maxhp / 4)
         if A.alive and landed and st.sides[i].mon is A:
             self.run_hook(st, i, A, "on_damage_taken_hp", rng)
         if A.alive and landed and st.sides[i].mon is A:           # 생명의구슬/조개껍질방울은 낙오카드 등이 끝난 뒤
@@ -1242,10 +1252,6 @@ class Engine:
                 if j not in cand:
                     j = cand[0]
                 self._switch_in(st, i, rng, to=j)
-        elif mv["force_switch"] and D.alive and not hit_sub and D.sub == 0 and norm(D.ability) != "suctioncups":
-            cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
-            if cand:
-                self._switch_in(st, o, rng, to=rng.choice(cand))
 
     @staticmethod
     def _gem_flag(A, mv):
@@ -1380,6 +1386,12 @@ class Engine:
             bm.taunt = bm.encore = bm.healblock = bm.disable_n = 0
             bm.disabled = ""
             bm.item = ""
+
+    def _self_destruct_fail(self, st, i, mv):
+        """자폭 기술(Explosion 등)은 막히거나 빗나가거나 면역이어도 쓰는 순간 쓰러진다 (Showdown selfdestruct: 'always')"""
+        A = st.sides[i].mon
+        if mv["self_destruct"] and mv["category"] != "status" and A.alive:
+            self.hp_change(st, i, A, -A.hp, "자폭")
 
     def _will_act(self, st, i):
         return any(j != i and st.sides[j].mon.alive and st.sides[j].active == self._starts[j] for j in self._later)
@@ -1523,7 +1535,7 @@ class Engine:
             return
         if key == "encore":
             if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.encore and D.last_move and D.last_move not in ("encore",) and \
-                    "failencore" not in self.data.moves[D.last_move]["flags"]:
+                    D.last_move not in D.spent and "failencore" not in self.data.moves[D.last_move]["flags"]:        # PP 가 0 인 기술(되살리기)에는 실패
                 D.encore = 3
                 self._mental_herb(D)
             return
