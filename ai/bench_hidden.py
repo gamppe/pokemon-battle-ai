@@ -61,6 +61,45 @@ def _play(job):
         snap = snapshot(eng, st)
         if mode == "oracle":
             ev = evaluate_actions(eng, st, me, n=worlds * rollouts, seed=arng.randrange(10 ** 9))
+        elif mode.startswith("know_"):
+            what = mode[5:]
+            sets = {}
+            for i, m in models.items():
+                if not st.sides[opp].team[i].alive:
+                    continue
+                sp = m.sample_set(arng)
+                true = theirs[i]
+                if what == "item":
+                    sp["item"] = true["item"]
+                elif what == "moves":
+                    sp["moves"] = list(true["moves"])
+                elif what == "spread":
+                    sp["nature"], sp["sp"] = true["nature"], dict(true["sp"])
+                elif what == "ability":
+                    sp["ability"] = true["ability"]
+                sets[i] = sp
+            from .decide import resample_opponent
+            ev = {}
+            for w_ in range(worlds):                    # 모르는 부분은 세계마다 다시 뽑는다
+                sets2 = {}
+                for i, m in models.items():
+                    if not st.sides[opp].team[i].alive:
+                        continue
+                    sp = m.sample_set(arng)
+                    true = theirs[i]
+                    if what == "item":
+                        sp["item"] = true["item"]
+                    elif what == "moves":
+                        sp["moves"] = list(true["moves"])
+                    elif what == "spread":
+                        sp["nature"], sp["sp"] = true["nature"], dict(true["sp"])
+                    elif what == "ability":
+                        sp["ability"] = true["ability"]
+                    sets2[i] = sp
+                world = resample_opponent(eng, st, opp, sets2)
+                e = evaluate_actions(eng, world, me, n=rollouts, seed=arng.randrange(10 ** 9))
+                for a_, v_ in e.items():
+                    ev[a_] = ev.get(a_, 0.0) + v_ / worlds
         elif mode in ("prior", "post"):
             ms = {i: m for i, m in models.items() if st.sides[opp].team[i].alive}
             ev = evaluate_hidden(eng, st, me, ms, n_worlds=worlds, rollouts=rollouts, seed=arng.randrange(10 ** 9))
