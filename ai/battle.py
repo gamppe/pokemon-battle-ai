@@ -897,6 +897,7 @@ class Engine:
             self._say(st, "  봉인으로 사용 불가")
             return
         bm.moves_made += 1
+        bm.vol.discard("beakblast")                         # 기술이 나가는 순간 대기 상태가 끝난다
         bm.vol.discard("glaiverush")
         bm.vol.discard("destinybond")
         if norm(mname) != "destinybond":
