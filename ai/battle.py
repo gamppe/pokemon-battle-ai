@@ -254,6 +254,14 @@ class Engine:
             self._dmg_cache[key] = r
         return r
 
+    def _fainted_speed(self, st, i):
+        """쓰러진 포켓몬의 속도: 이벤트(도구/특성/마비/순풍)는 적용되지 않고 능력 단계만 반영된다 (Showdown 은 fainted 의 핸들러를 건너뜀)"""
+        bm = st.sides[i].mon
+        base = make_mon(self.data, self.spec_of(bm)).stats["spe"]
+        b = max(-6, min(6, bm.boosts.get("spe", 0)))
+        table = [1, 1.5, 2, 2.5, 3, 3.5, 4]
+        return math.floor(base * table[b]) if b >= 0 else math.floor(base / table[-b])
+
     def speed_of(self, st, i):
         bm = st.sides[i].mon
         m = make_mon(self.data, self.spec_of(bm))
@@ -808,7 +816,7 @@ class Engine:
             if not dead:
                 break
             if len(dead) == 2:      # 동시에 쓰러졌으면 쓰러진 포켓몬의 속도가 빠른 쪽이 먼저 나온다 (나중에 나온 쪽의 날씨/필드 특성이 이김)
-                dead.sort(key=lambda i: ((1 if st.trick_room else -1) * self.speed_of(st, i), rng.random()))
+                dead.sort(key=lambda i: ((1 if st.trick_room else -1) * self._fainted_speed(st, i), rng.random()))
             for i in dead:
                 self._replace(st, i, rng, switch_policy)
         for i in (0, 1):
