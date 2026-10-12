@@ -713,7 +713,7 @@ class Engine:
                 k0 = ks[0]
                 unusable = k0 in first_only or norm(moves[k0]) == bm.disabled or (bm.taunt and self.data.moves[norm(moves[k0])]["category"] == "status")
                 acts = [("t", 0)] if unusable else [("m", k0)]        # 앙코르로 고정된 기술을 쓸 수 없으면 발버둥
-                if not bm.trap and norm(st.sides[1 - side].mon.ability) != "shadowtag":
+                if self._can_switch(st, side):
                     acts += [("s", j) for j in S.alive_idx() if j != S.active]
                 return acts
         if bm.locked and bm.locked in moves and norm(bm.item) in CHOICE:
@@ -725,16 +725,23 @@ class Engine:
         if bm.taunt:
             ok = [k for k in ks if self.data.moves[norm(moves[k])]["category"] != "status" and k not in first_only and norm(moves[k]) != bm.disabled]
             acts = [("m", k) for k in ok] or [("t", 0)]               # 도발로 쓸 수 있는 기술이 없으면 발버둥
-            if not bm.trap and norm(st.sides[1 - side].mon.ability) != "shadowtag":
+            if self._can_switch(st, side):
                 acts += [("s", j) for j in S.alive_idx() if j != S.active]
             return acts
         ks = [k for k in ks if norm(moves[k]) != bm.disabled]
         acts += [("m", k) for k in ks if k not in first_only] or [("t", 0)]
-        if not bm.trap and "shadowtag" != norm(st.sides[1 - side].mon.ability):
-            acts += [("s", j) for j in S.alive_idx() if j != S.active]
-        elif norm(bm.item) == "shedshell" or ("Ghost" in bm.types and not bm.trap):
+        if self._can_switch(st, side):
             acts += [("s", j) for j in S.alive_idx() if j != S.active]
         return acts
+
+    def _can_switch(self, st, side):
+        """교체 가능 여부: 도구 '벗어난껍질'과 고스트 타입은 속박/그림자밟기에 잡히지 않는다 (Showdown: trapped 면역)"""
+        bm = st.sides[side].mon
+        if norm(bm.item) == "shedshell" or "Ghost" in self.types_of(bm):
+            return True
+        if bm.trap:
+            return False
+        return norm(st.sides[1 - side].mon.ability) != "shadowtag" or norm(bm.ability) == "shadowtag"
 
     # ───────────────────────── 턴 진행 ─────────────────────────
     def step(self, st, acts, rng, switch_policy=None):
@@ -962,6 +969,9 @@ class Engine:
         if mv["type"] == "Electric" and bm.charged:                 # 전기 기술을 쓰고 나면 충전 해제 (onAfterMove)
             bm.charged = 0
         st.lastmove_any = norm(mname)                       # Copycat 용: 전투 전체에서 마지막으로 쓰인 기술
+        for S_ in st.sides:                                 # 구애 아이템을 잃으면(트릭 등) 기술 고정도 풀린다 (choicelock 볼라타일은 아이템이 바뀌면 사라짐)
+            if S_.mon.locked and norm(S_.mon.item) not in CHOICE:
+                S_.mon.locked = None
 
     def _run_move(self, st, i, mv, mname, acts, rng, switch_policy):
         """기술 실행 단계 (사용 조건 확인 이후). Copycat 처럼 다른 기술을 불러 쓰는 기술도 이 함수를 다시 호출한다"""
@@ -991,6 +1001,7 @@ class Engine:
         if foe_target and not D.alive:
             self._say(st, "  대상 없음")
             self._self_destruct_fail(st, i, mv)
+            self._rampage_abort(st, bm, rng)
             return
         if foe_target and D.semi is not None and norm(bm.ability) != "noguard" and norm(D.ability) != "noguard" and norm(mv["name"]) not in D.semi:
             self._say(st, "  빗나감(반무적 상태)")
@@ -1193,6 +1204,7 @@ class Engine:
         if norm(A.ability) == "skilllink" and mv["max_hits"] == 5:
             nhits = 5
         total, landed = 0, 0
+        self._raised_pre = D.raised_turn == st.turn        # 부가효과 판정은 이 기술의 피격 반응(스태미나 등) 이전의 능력 상승만 본다
         eff_mv = mv
         berry_used = False
         self._landed = False
@@ -1440,7 +1452,7 @@ class Engine:
         for e in mv["effects"]:
             if e["trigger_type"] != "secondary":
                 continue
-            if need_raised and e["applies_to"] == "target" and D.raised_turn != st.turn:
+            if need_raised and e["applies_to"] == "target" and not self._raised_pre:
                 continue
             if e["applies_to"] == "target":
                 if hit_sub or not D.alive or norm(D.ability) == "shielddust" or norm(D.item) == "covertcloak":
