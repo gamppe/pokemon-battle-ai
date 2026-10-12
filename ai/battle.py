@@ -1738,6 +1738,10 @@ class Engine:
         o = 1 - i
         key = norm(mv["name"])
         self._sfail = False                         # 실패하면 True -> 직전 기술 실패 조건(Temper Flare 등)과 Stomping Tantrum 에 쓴다
+        if mv["target"] == "adjacentAlly":          # 코치/도우미 등 아군 대상 기술은 싱글배틀에서는 대상이 없어 실패한다
+            self._say(st, "  대상 없음")
+            self._sfail = True
+            return
         if key == "sleeptalk":                      # 자는 동안 자신의 기술 중 하나를 무작위로 쓴다 (불러 쓸 수 없는 기술 제외)
             if A.status != "slp":
                 self._sfail = True
