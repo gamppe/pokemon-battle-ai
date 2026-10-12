@@ -1386,6 +1386,9 @@ class Engine:
                 D.last_item = D.item
                 D.item = ""
                 berry_used = False
+            if key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.ability) != "stickyhold" and not (
+                    any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
+                A.item, D.item = D.item, ""                       # 도둑질/탐내기: 도구를 빼앗는다 (자신이 도구가 없을 때, 열매 소비보다 먼저)
             if key in ("bugbite", "pluck") and A.alive and D.item and norm(D.item).endswith("berry") \
                     and norm(D.ability) != "stickyhold":                # 벌레먹기/쪼기: 상대의 열매를 빼앗아 바로 먹고 효과를 얻는다
                 berry, own = D.item, A.item
@@ -1401,14 +1404,14 @@ class Engine:
                 thrown = norm(A.item)
                 A.item = ""
                 if thrown.endswith("berry"):
-                    own_ = D.item
+                    own_, last_ = D.item, D.last_item
                     D.item = thrown
                     for hook_ in ("on_damage_taken_hp", "on_status"):
                         for src_, r_ in self.rows(D, hook_):
                             if src_ == "item" and D.item == thrown:
                                 self.apply_row(st, "item:" + r_["label"].split(":", 1)[1], r_, o, D, rng)
                     D.ate_berry = True
-                    D.last_item = thrown
+                    D.last_item = last_                           # 던져 맞은 열매는 eatItem 이 아니라서 마지막 도구로 기록되지 않는다
                     D.item = own_
                 elif thrown in ("flameorb", "toxicorb", "lightball", "poisonbarb"):
                     self.try_status(st, o, D, {"flameorb": "brn", "toxicorb": "tox", "lightball": "par", "poisonbarb": "psn"}[thrown], rng, src_side=i)
@@ -1440,9 +1443,6 @@ class Engine:
         self._secondary(st, i, o, mv, rng, hit_sub)      # 대타는 상대에게 걸리는 부가효과만 막고, 자신에게 걸리는 효과(불꽃의charge 등)는 그대로 적용
         if deferred and D.alive and st.sides[o].mon is D:                  # 열매 등 HP 조건 효과: 부가효과(힐블록 등)가 끝난 뒤에 판단
             self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=deferred[0], dmg=deferred[1], hp_before=deferred[2], foe_side=i)
-        if not hit_sub and key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.ability) != "stickyhold" and landed and not (
-                any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
-            A.item, D.item = D.item, ""                           # 도둑질/탐내기: 도구를 빼앗는다 (자신이 도구가 없을 때)
         if not hit_sub:
             if key == "knockoff" and D.item and norm(D.ability) != "stickyhold" and not (
                     any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
