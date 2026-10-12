@@ -60,6 +60,7 @@ class BMon:
     ability: str = ""
     vol: set = field(default_factory=set)
     protect_n: int = 0
+    stall_turn: int = -1                       # 마지막으로 방어류를 성공시킨 턴 (한 턴 쉬면 연속 카운터 초기화)
     met_last: str = ""                 # 메트로놈 도구: 직전에 쓴 기술 / 연속 사용 횟수
     met_n: int = 0
     hid_item: str = ""                 # 매직룸 동안 숨겨 둔 도구
@@ -1767,12 +1768,12 @@ class Engine:
                 return
         if key in ("quickguard", "wideguard"):
             A.vol.add(key)
-            A.protect_n += 1
+            A.protect_n += 1; A.stall_turn = st.turn
             return
         if key == "endure":
             if rng.random() < 1 / (3 ** min(A.protect_n, 5)):
                 A.vol.add("enduring")
-                A.protect_n += 1
+                A.protect_n += 1; A.stall_turn = st.turn
             else:
                 A.protect_n = 0
                 self._sfail = True
@@ -1783,7 +1784,7 @@ class Engine:
                 for e in mv["effects"]:
                     if e["code"] in CONTACT_PUNISH:
                         A.vol.add(e["code"])
-                A.protect_n += 1
+                A.protect_n += 1; A.stall_turn = st.turn
             else:
                 A.protect_n = 0
                 self._sfail = True
@@ -2180,6 +2181,8 @@ class Engine:
                     self.hp_change(st, i, bm, -max(1, bm.maxhp // (32 if norm(bm.ability) == "heatproof" else 16)), "화상")
         for i in order:              # Showdown 은 효과 종류별 순서(씨뿌리기 8, 독 9, 화상 10, 저주 12, 조임 13 ...)로 모든 포켓몬을 처리한다 -> 두 번째 패스
             bm = st.sides[i].mon
+            if bm.protect_n and bm.stall_turn != st.turn:
+                bm.protect_n = 0                              # 방어류를 쓰지 않고 한 턴이 지나면 stall 이 사라진다
             if bm.taunt:
                 bm.taunt -= 1
             if bm.healblock:
