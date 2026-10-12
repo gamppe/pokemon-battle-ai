@@ -1429,7 +1429,7 @@ class Engine:
                     self.hp_change(st, i, A, -heal, "해감액")
                 else:
                     if norm(A.item) == "bigroot":
-                        heal = math.floor(heal * 1.3)
+                        heal = (heal * 5324 + 2047) // 4096          # 큰뿌리: modify([5324, 4096])
                     self.hp_change(st, i, A, heal, "흡수")
             if key == "knockoff" and D.item and any(r["hook"] == "on_damage_taken_hp" for r in self.data.item_fx.get(norm(D.item), []))                     and norm(D.ability) != "stickyhold":
                 D.item = ""
@@ -2172,6 +2172,8 @@ class Engine:
                 self.hp_change(st, i, bm, -d, "씨뿌리기")
                 src = st.sides[1 - i].mon
                 if src.alive:
+                    if norm(src.item) == "bigroot":                  # 큰뿌리: 씨뿌리기 회복 5324/4096 (modify 반올림)
+                        d = (d * 5324 + 2047) // 4096
                     self.hp_change(st, 1 - i, src, d, "씨뿌리기 흡수")
         for i in order:                                       # 효과 종류별로 모든 포켓몬을 처리한다 (날씨 1 -> 미래예지/희망사항 -> 필드·도구 -> 씨뿌리기 8 -> 독/화상 9~10)
             bm = st.sides[i].mon
