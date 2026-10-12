@@ -20,6 +20,9 @@ CONTACT_PUNISH = {"spikyshield": ("dmg", 1 / 8), "banefulbunker": ("status", "ps
                   "kingsshield": ("boost", ("atk", -1)), "silktrap": ("boost", ("spe", -1)), "obstruct": ("boost", ("def", -2))}
 STATUS_IMMUNE_TYPE = {"par": "Electric", "brn": "Fire", "frz": "Ice"}
 NON_FOE_TARGETS = {"self", "allySide", "foeSide", "all", "allyTeam", "allies", "adjacentAlly", "adjacentAllyOrSelf"}
+# 변신한 포켓몬에서는 효과가 꺼지는 특성 (Showdown 의 notransform 플래그)
+NO_TRANSFORM = {"disguise", "iceface", "gulpmissile", "hungerswitch", "neutralizinggas", "protosynthesis", "quarkdrive", "terashift",
+                "zerotohero", "embodyaspectcornerstone", "embodyaspecthearthflame", "embodyaspectteal", "embodyaspectwellspring"}
 NO_SWAP = {"wonderguard", "multitype", "illusion", "stancechange", "schooling", "comatose", "shieldsdown", "disguise", "rkssystem", "battlebond", "powerconstruct", "zenmode", "gulpmissile", "iceface", "neutralizinggas", "asone", "commander", "hungerswitch", "terashift", "zerotohero"}
 MULTI_ACCURACY = {"tripleaxel", "triplekick"}
 MOLD_BREAKERS = {"moldbreaker", "teravolt", "turboblaze"}
@@ -486,7 +489,7 @@ class Engine:
         bm.orig = (bm.spec, bm.sid, list(bm.types), bm.ability)
         ts = tgt.spec
         bm.spec = dict(ts, moves=list(ts["moves"]), item=bm.item)
-        bm.sid, bm.types, bm.ability = tgt.sid, list(tgt.types), tgt.ability
+        bm.sid, bm.types, bm.ability = tgt.sid, list(tgt.types), "" if norm(tgt.ability) in NO_TRANSFORM else tgt.ability
         bm.boosts = dict(tgt.boosts)
         bm.locked = None
         self._say(st, f"  {bm.name} → {tgt.name} 로 변신")
