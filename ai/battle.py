@@ -101,6 +101,8 @@ class BMon:
     trap2_src: tuple | None = None            # 영혼묶기 등 'trapped' (side, active)
     stat_over: dict = field(default_factory=dict)   # 수치 덮어쓰기 (파워스플릿 등; 교체하면 원래대로)
     hangry: bool = False                      # 모르페코 배고픈 모양
+    stock_d: int = 0                          # 비축하기로 실제로 오른 방어/특방 단계
+    stock_s: int = 0
     syrup: bool = False                       # 달콤시럽(Supersweet Syrup)은 배틀 중 한 번만 발동
     uproar: int = 0                           # 소란피기 남은 턴 (걸려 있는 동안 기술이 고정되고 아무도 잠들지 않는다)
     prev_move: str = ""
@@ -116,6 +118,7 @@ class BMon:
     last_move: str = ""
     last_attacker: tuple | None = None
     hurt_turn: int = -1
+    dmg_turn: int = -1                  # 이번 턴에 (반동/독 등 포함) 어떤 피해든 입었는가 (깜짝병기 조건)
     lowered_turn: int = -1
     raised_turn: int = -1              # 이번 턴에 능력이 올랐는가 (투명목소리/질투의불꽃 조건)
     last_failed: bool = False
@@ -361,7 +364,7 @@ class Engine:
             sa["hp_frac"], sd["hp_frac"] = round(sa["hp_frac"], 2) or 0.01, round(sd["hp_frac"], 2) or 0.01
         F = self.field_for(st, di_)
         fl = {"progress"}
-        if D.hurt_turn == st.turn:
+        if D.dmg_turn == st.turn:
             fl.add("target_hurt_this_turn")
         if A.last_attacker == (st.turn, st.sides[di_].active):
             fl.add("user_hit_by_target_this_turn")
@@ -380,6 +383,8 @@ class Engine:
         fl.add(f"times_attacked:{A.times_attacked}")
         if D.active_turns == 0:
             fl.add("target_switched_in")
+        if A.stockpile:
+            fl.add(f"stockpile:{A.stockpile}")
         if "minimize" in D.vol:
             fl.add("target_minimized")
         if D.semi is not None and move_key in {"dig": ("earthquake", "magnitude"), "dive": ("surf", "whirlpool"), "fly": ("gust", "twister"),
@@ -427,6 +432,8 @@ class Engine:
         if delta > 0 and bm.healblock:
             return 0
         bm.hp = max(0, min(bm.maxhp, bm.hp + delta))
+        if bm.hp < before:
+            bm.dmg_turn = st.turn
         if not before and bm.hp:
             bm.faint_logged = False
         if before and not bm.hp:
@@ -541,6 +548,8 @@ class Engine:
             return False
         o = 1 - side if foe_side is None else foe_side
         foe = st.sides[o].mon
+        if row["label"].endswith("Effect Spore") and ("Grass" in foe.types or norm(foe.ability) == "overcoat" or norm(foe.item) == "safetygoggles"):
+            return False                                  # 포자: 풀 타입/방진/방진고글에는 듣지 않는다
         kind, tgt, code, val = row["kind"], row["target"], row["code"], row["value"]
         tside, tm = (side, bm) if tgt in (None, "self") else (o, foe)
         applied = True
@@ -878,7 +887,7 @@ class Engine:
             S.active = to
         bm = S.mon
         bm.active_turns, bm.moves_made, bm.moved, bm.used = 0, 0, False, set()
-        bm.taunt = bm.stockpile = bm.yawn = bm.encore = bm.healblock = bm.rampage = bm.uproar = bm.throat = bm.met_n = bm.disable_n = 0
+        bm.taunt = bm.stockpile = bm.stock_d = bm.stock_s = bm.yawn = bm.encore = bm.healblock = bm.rampage = bm.uproar = bm.throat = bm.met_n = bm.disable_n = 0
         bm.encore_move = ""
         bm.met_last = bm.disabled = ""
         bm.db_pending = False
@@ -1365,6 +1374,8 @@ class Engine:
                 st.lastmove_any = norm(mname)
                 return
         self._run_move(st, i, mv, mname, acts, rng, switch_policy)
+        if norm(mv["name"]) == "spitup" and bm.stockpile:
+            self._unstock(st, i, bm)                          # 분출 뒤 비축 해제
         if norm(mv["name"]) in ("steelbeam", "mindblown", "chloroblast") and bm.alive and norm(bm.ability) != "magicguard":
             self.hp_change(st, i, bm, -math.floor(bm.maxhp / 2 + 0.5), mv["name"])      # 빗나가거나 막혀도 최대 HP 절반을 잃는다 (mindBlownRecoil)
         if mv["type"] == "Electric" and bm.charged:                 # 전기 기술을 쓰고 나면 충전 해제 (onAfterMove)
@@ -1464,6 +1475,10 @@ class Engine:
             for r in mv["rules"]:
                 if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and bm.alive:
                     self.hp_change(st, i, bm, -math.floor(bm.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
+            return
+        if norm(mv["name"]) == "spitup" and not bm.stockpile:
+            bm.last_failed = True
+            self._say(st, "  실패 (비축 없음)")
             return
         if norm(mv["name"]) == "uproar":                    # 소란피기: 쓰는 순간 양쪽의 잠듦이 깨어난다
             for S_ in st.sides:
@@ -1853,7 +1868,7 @@ class Engine:
                 self.hp_change(st, i, A, -math.floor(A.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
             elif r["params"].get("effect") == "clear_terrain" and landed and st.terrain:       # 스틸롤러/아이스스피너: 맞히면 필드를 없앤다 (대타 포함)
                 st.terrain, st.terrain_turns = None, 0
-            elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard":      # 대타를 때려도 깐다 (onAfterSubDamage)
+            elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard" and A.alive:      # 대타를 때려도 깐다 (onAfterSubDamage)
                 self._side_condition(st, o, {"stealth_rock": "stealthrock"}.get(r["params"]["hazard"], r["params"]["hazard"]), swap=True)
         if mv["force_switch"] and not mv["self_switch"] and D.alive and not hit_sub and D.sub == 0 and norm(D.ability) != "suctioncups" and "ingrain" not in D.vol:
             cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]        # 드래곤테일 등: 끌어내기가 레드카드/탈출버튼보다 먼저
@@ -1899,6 +1914,14 @@ class Engine:
         if A.item and norm(A.item).endswith("gem") and mv["category"] != "status" and mv["type"] == A.item[:-4].strip():
             return {"gem"}
         return set()
+
+    def _unstock(self, st, side, bm):
+        """비축하기가 풀리면서 올랐던 방어/특방이 되돌아간다"""
+        if bm.stock_d:
+            self.change_boost(st, side, bm, "def", -bm.stock_d)
+        if bm.stock_s:
+            self.change_boost(st, side, bm, "spd", -bm.stock_s)
+        bm.stockpile = bm.stock_d = bm.stock_s = 0
 
     def _fling_throw(self, st, i, o, A, D, rng, hit_sub):
         """던지기: 도구를 상대에게 던져 효과를 준다"""
@@ -2062,8 +2085,10 @@ class Engine:
             elif code == "stockpile":
                 if tgt.stockpile < 3:
                     tgt.stockpile += 1
-                    self.change_boost(st, tgt_side, tgt, "def", 1)
-                    self.change_boost(st, tgt_side, tgt, "spd", 1)
+                    tgt.stock_d += self.change_boost(st, tgt_side, tgt, "def", 1)
+                    tgt.stock_s += self.change_boost(st, tgt_side, tgt, "spd", 1)
+                else:
+                    self._sfail = True
             elif code in ("aquaring", "ingrain", "minimize", "saltcure", "electrify"):
                 tgt.vol.add(code)
             elif code == "noretreat":
@@ -2363,6 +2388,20 @@ class Engine:
                 return
         if key == "noretreat" and "noretreat" in A.vol:
             self._sfail = True
+            return
+        if key == "healpulse":                                 # 치유파동: 대상을 회복시킨다 (메가런처는 75%)
+            if D.alive and D.sub == 0 and D.hp < D.maxhp:
+                frac = 0.75 if norm(A.ability) == "megalauncher" else 0.5
+                self.hp_change(st, o, D, (math.floor(D.maxhp * round(frac * 4096) / 4096 + 1e-9) if frac == 0.5 else (D.maxhp * 3072 + 2047) // 4096), "치유파동")
+            else:
+                self._sfail = True
+            return
+        if key == "swallow":                                   # 삼키기: 비축한 층수에 따라 25/50/100% 회복하고 비축 해제
+            if A.stockpile >= 1:
+                self.hp_change(st, i, A, math.floor(A.maxhp * [0.25, 0.5, 1.0][A.stockpile - 1]) if A.hp < A.maxhp else 0, "삼키기")
+                self._unstock(st, i, A)
+            else:
+                self._sfail = True
             return
         if key in ("magneticflux", "gearup"):                  # 자기장조작/기어업: 플러스/마이너스 특성의 포켓몬만 오른다 (싱글: 자신)
             if norm(A.ability) in ("plus", "minus"):

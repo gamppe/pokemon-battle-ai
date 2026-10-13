@@ -424,6 +424,11 @@ def base_power(c: Ctx):
             elif f in ("times_attacked", "fainted_allies"):     # 분노의주먹/추도: 엔진이 flags 로 횟수를 알려줌
                 n = next((int(x.split(":")[1]) for x in c.flags if x.startswith(f + ":")), 0)
                 bp = min(p.get("cap", 10 ** 9), p["base"] + p["per"] * n)
+            elif f == "stockpile_layers":        # 내뿜기: 위력 = 100 x 비축 층수
+                n = next((int(x.split(":")[1]) for x in c.flags if x.startswith("stockpile:")), 0)
+                bp = p["per"] * n
+                if not n:
+                    c.fail = "no_stockpile"
             elif f == "party_atk":               # 따귀때리기: 파티원 한 마리의 기본 공격력
                 n = next((int(x.split(":")[1]) for x in c.flags if x.startswith("beatup:")), c.A.base["atk"])
                 bp = p["base"] + n // p["div"]
