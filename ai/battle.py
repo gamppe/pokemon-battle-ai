@@ -613,8 +613,9 @@ class Engine:
                 def red(holder=bm):
                     cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
                     if cand and holder.alive and st.sides[side].mon is holder and st.sides[o].mon.alive and holder.item:   # 보유자가 이미 끌려 나갔으면 발동하지 않음
-                        self._use_item(st, holder)
-                        self._switch_in(st, o, self._rng, to=self._rng.choice(cand))
+                        self._use_item(st, holder)                       # 뿌리박기/흡반으로 못 끌려 나가도 레드카드는 소모된다
+                        if "ingrain" not in st.sides[o].mon.vol and norm(st.sides[o].mon.ability) != "suctioncups":
+                            self._switch_in(st, o, self._rng, to=self._rng.choice(cand))
                 self._pending.append(red)
                 applied = False
             elif code == "self_switch_out":
@@ -2389,6 +2390,26 @@ class Engine:
         if key == "noretreat" and "noretreat" in A.vol:
             self._sfail = True
             return
+        if key == "teatime":                                   # 티타임: 필드의 모든 포켓몬이 지닌 열매를 먹는다
+            any_ = False
+            for k_ in (i, o):
+                m_ = st.sides[k_].mon
+                if m_.alive and m_.item and norm(m_.item).endswith("berry") and "embargo" not in m_.vol and norm(m_.ability) != "klutz":
+                    any_ = True
+                    self._eat_again(st, k_, m_, m_.item, rng)
+                    self._use_item(st, m_)
+            if not any_:
+                self._sfail = True
+            return
+        if key == "stuffcheeks":                               # 볼가득채우기: 지닌 열매를 먹고(효과는 조건 없이 발동) 방어 +2
+            if A.item and norm(A.item).endswith("berry") and "embargo" not in A.vol and norm(A.ability) != "klutz":
+                berry = A.item
+                self._eat_again(st, i, A, berry, rng)
+                self._use_item(st, A)
+                self.change_boost(st, i, A, "def", 2)
+            else:
+                self._sfail = True
+            return
         if key == "healpulse":                                 # 치유파동: 대상을 회복시킨다 (메가런처는 75%)
             if D.alive and D.sub == 0 and D.hp < D.maxhp:
                 frac = 0.75 if norm(A.ability) == "megalauncher" else 0.5
@@ -2860,8 +2881,9 @@ class Engine:
             if bm.alive and bm.syrup_n:                           # 물엿폭탄: 4턴 동안 매 턴 속도 -1
                 s_ = bm.syrup_src
                 if s_ and st.sides[s_[0]].active == s_[1]:
-                    self.change_boost(st, i, bm, "spe", -1, src_side=s_[0])
-                    bm.syrup_n -= 1
+                    bm.syrup_n -= 1                                # 지속 4: 매 턴 끝 카운트가 먼저 줄고 0 이 되면 효과 없이 끝난다 (3번 하락)
+                    if bm.syrup_n:
+                        self.change_boost(st, i, bm, "spe", -1, src_side=s_[0])
                 else:
                     bm.syrup_n = 0
             if bm.alive and bm.perish:                           # 멸망의노래: 카운트가 0 이 되면 쓰러진다
