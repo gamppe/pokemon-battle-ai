@@ -327,6 +327,8 @@ def type_effectiveness(c: Ctx, move_type: str, defender: Mon):
 def _type_eff_single(c: Ctx, move_type: str, defender: Mon):
     mod, immune = 0, False
     ign = (c.move.get("extra") or {}).get("ignoreImmunity")
+    if "real_immunity" in c.flags:                        # 미래예지가 실제로 맞을 때는 면역을 무시하지 않는다
+        ign = None
     ghost_ok = has_ability_code(c, c.A, "ghost_immunity") and move_type in ("Normal", "Fighting")   # 배짱: 고스트에도 적중
     ignore_ground = c.F.gravity or c.D.grounded_vol or any(r["code"] == "ground_immunity" for r in c.data.item_fx.get(norm(c.D.item), []))
     forced = {}

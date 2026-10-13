@@ -2090,6 +2090,8 @@ class Engine:
         elif k == "stat_stage":
             self.change_boost(st, tgt_side, tgt, code, e["stages"] or 0, src_side=(i if tgt_side != i else None))
         elif k == "volatile":
+            if code in ("confusion", "yawn") and tgt_side != i and "safeguard" in st.sides[tgt_side].screens and norm(st.sides[i].mon.ability) != "infiltrator":
+                return                                                        # 신비의부적: 혼란/하품도 막는다
             if code == "flinch":
                 if not tgt.moved and norm(tgt.ability) != "innerfocus":
                     tgt.vol.add("flinch")
@@ -2179,12 +2181,12 @@ class Engine:
         src, D = fut["src"], st.sides[tgt_side].mon
         F = self.field_for(st, tgt_side)
         sa, sd = self.spec_of(src), self.spec_of(D)
-        r = calc(self.data, sa, sd, mv["name"], F, False, hit=1, proc=False, flags=frozenset({"progress"}))
+        r = calc(self.data, sa, sd, mv["name"], F, False, hit=1, proc=False, flags=frozenset({"progress", "real_immunity"}))
         if not r["rolls"]:
             self._say(st, "  미래공격: 효과 없음")
             return
         if rng.random() < 1 / 24:
-            r = calc(self.data, sa, sd, mv["name"], F, True, hit=1, proc=False, flags=frozenset({"progress"}))
+            r = calc(self.data, sa, sd, mv["name"], F, True, hit=1, proc=False, flags=frozenset({"progress", "real_immunity"}))
         dmg = rng.choice(r["rolls"])
         if D.hp == D.maxhp and dmg >= D.hp and (norm(D.item) == "focussash" or norm(D.ability) == "sturdy"):
             dmg = D.hp - 1
@@ -2617,7 +2619,8 @@ class Engine:
             self.hp_change(st, i, A, -A.hp, "메멘토")
             return
         if key == "yawn":
-            if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.yawn and not D.status and not (st.terrain == "electric" and self._grounded(D)):      # 하품 자체는 일렉트릭필드만 막는다 (미스트필드는 잠드는 시점에 막음)
+            if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.yawn and not D.status and not (st.terrain == "electric" and self._grounded(D)) \
+                    and not ("safeguard" in st.sides[o].screens and norm(A.ability) != "infiltrator"):      # 하품 자체는 일렉트릭필드만 막는다 (미스트필드는 잠드는 시점에 막음)
                 if not any(r["hook"] == "immunity" and (r["code"] or "").startswith("status:slp") for r in self.data.ability_fx.get(norm(D.ability), [])):
                     D.yawn = 2
             return
