@@ -1445,6 +1445,10 @@ class Engine:
                 and mv["target"] != "adjacentAlly" and (mv["target"] in NON_FOE_TARGETS or st.sides[1 - i].mon.alive):      # 대상이 없으면 변환기 계열 특성은 발동하지 않는다
             bm.vol.add("protean")
             bm.types = [mv["type"]]
+        if not self._use_condition_ok(st, i, mv, acts, late=True):
+            self._say(st, "  실패 (대상 타입)")
+            bm.last_failed = True
+            return
         o = 1 - i
         target_is_self = mv["target"] in NON_FOE_TARGETS or (norm(mv["name"]) == "curse" and "Ghost" not in bm.types)
         D = st.sides[o].mon
@@ -1577,8 +1581,11 @@ class Engine:
                 return True
         return False
 
-    def _use_condition_ok(self, st, i, mv, acts):
+    def _use_condition_ok(self, st, i, mv, acts, late=False):
         bm = st.sides[i].mon
+        if late:                                             # 대상 타입 때문에 실패하는 조건은 변환기 특성(Protean) 뒤에 판정된다 (씨뿌리기 등)
+            return not any(tok.startswith("target_has_type:") and tok.split(":")[1] in st.sides[1 - i].mon.types
+                           for r in mv["rules"] if r["type"] == "use_condition" for tok in r["params"].get("fails_if", "").split("|"))
         if st.gravity and "gravity" in mv["flags"]:
             return False
         foe_ = st.sides[1 - i].mon
@@ -1628,8 +1635,8 @@ class Engine:
                     return False
                 if tok == "user_asleep" and bm.status == "slp":
                     return False
-                if tok.startswith("target_has_type:") and tok.split(":")[1] in st.sides[1 - i].mon.types:
-                    return False
+                if tok.startswith("target_has_type:"):
+                    continue                                 # (late=True 에서 판정)
                 if tok.startswith("user_hp_frac<=") and bm.frac() <= float(tok.split("<=")[1]):
                     return False
         return True
