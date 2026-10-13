@@ -57,6 +57,7 @@ class Mon:
     weight_hg: int = 0
     gender: str = "N"
     stats: dict = field(default_factory=dict)
+    hangry: bool = False
     grounded_vol: bool = False   # 쓰러뜨리기/뿌리박기로 땅에 붙은 상태
     levitating: bool = False     # 전자부유 중
     maxhp: int = 0
@@ -90,6 +91,7 @@ def make_mon(data: GameData, spec: dict) -> Mon:
             w = w * 2 if r["value"] == 2 else tr(w * r["value"])
     m.weight_hg = max(1, w)
     m.gender = spec.get("gender", "N")
+    m.hangry = bool(spec.get("hangry"))
     m.grounded_vol, m.levitating = bool(spec.get("grounded_vol")), bool(spec.get("levitating"))
     m.maxhp = m.base["hp"] + sp["hp"] + 75
     m.hp = m.maxhp if m.hp_frac is None else max(1, math.floor(m.maxhp * m.hp_frac))
@@ -512,7 +514,7 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
                 t = p["table"].get(F.terrain)
                 if t and grounded(c, A): mv["type"] = t
             elif p.get("by") == "form":                       # 레이징불: 사용자의 폼에 따라 타입이 정해진다 (오라윌: Morpeko 모양)
-                t = next((v for k_, v in p["table"].items() if norm(k_) == norm(A.sid)), None)
+                t = next((v for k_, v in p["table"].items() if norm(k_) == norm(A.sid) + ("hangry" if A.hangry else "")), None)
                 if t: mv["type"] = t
             else:
                 c.note_unsupported(f"{mv['name']}: 타입 규칙 {p.get('by')}")

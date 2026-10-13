@@ -100,6 +100,7 @@ class BMon:
     oct_src: tuple | None = None              # 문어꼼짝 (side, active)
     trap2_src: tuple | None = None            # 영혼묶기 등 'trapped' (side, active)
     stat_over: dict = field(default_factory=dict)   # 수치 덮어쓰기 (파워스플릿 등; 교체하면 원래대로)
+    hangry: bool = False                      # 모르페코 배고픈 모양
     syrup: bool = False                       # 달콤시럽(Supersweet Syrup)은 배틀 중 한 번만 발동
     uproar: int = 0                           # 소란피기 남은 턴 (걸려 있는 동안 기술이 고정되고 아무도 잠들지 않는다)
     prev_move: str = ""
@@ -333,7 +334,7 @@ class Engine:
     def spec_of(self, bm: BMon):
         s = bm.spec
         return dict(sid=bm.sid, ability=bm.ability, item=bm.item, nature=s.get("nature", "Serious"), sp=s.get("sp", {}),
-                    boosts=dict(bm.boosts), status=bm.status, hp_frac=bm.hp / bm.maxhp, gender=s.get("gender", "N"), types=self.types_of(bm), stat_over=dict(bm.stat_over),
+                    boosts=dict(bm.boosts), status=bm.status, hp_frac=bm.hp / bm.maxhp, gender=s.get("gender", "N"), types=self.types_of(bm), stat_over=dict(bm.stat_over), hangry=bm.hangry,
                     grounded_vol=bool("smackdown" in bm.vol or "ingrain" in bm.vol), levitating=bool(bm.magnet))
 
     def field_for(self, st, defender_side):
@@ -558,10 +559,13 @@ class Engine:
             if src.startswith("item:") and tm.healblock and self._is_consumable(bm.item):
                 applied = False                    # 회복 열매는 힐블록 중에는 먹지 않는다 (onTryEatItem 이 TryHeal 을 확인)
             elif tm.alive:
-                self.hp_change(st, tside, tm, max(1, math.floor(tm.maxhp * _frac(val) + 1e-9)), src)
+                h_ = max(1, math.floor(tm.maxhp * _frac(val) + 1e-9))
+                if src.startswith("item:") and norm(tm.ability) == "ripen" and norm(bm.item).endswith("berry"):
+                    h_ *= 2                                    # 숙성: 열매 회복량 2배
+                self.hp_change(st, tside, tm, h_, src)
         elif kind == "heal_fixed":
             if tm.alive:
-                self.hp_change(st, tside, tm, int(val), src)
+                self.hp_change(st, tside, tm, int(val) * (2 if src.startswith("item:") and norm(tm.ability) == "ripen" and norm(bm.item).endswith("berry") else 1), src)
         elif kind == "heal_dmg_frac":
             if tm.alive and dmg:
                 self.hp_change(st, tside, tm, max(1, math.floor(dmg * _frac(val))), src)
@@ -847,6 +851,7 @@ class Engine:
             old.ate_berry = False
             old.opp, old.cud_berry, old.cud_n = {}, "", 0
             old.stat_over = {}
+            old.hangry = False
             old.magnet, old.syrup_n, old.oct_src, old.trap2_src = 0, 0, None, None
             old.sub, old.charge, old.semi, old.trap = 0, None, None, 0
             if old.orig:
@@ -1363,7 +1368,7 @@ class Engine:
         self._leppa_update(st, rng)
         self._forecast_sync(st)
         for S_ in st.sides:                                 # 구애 아이템을 잃으면(트릭 등) 기술 고정도 풀린다 (choicelock 볼라타일은 아이템이 바뀌면 사라짐)
-            if S_.mon.locked and norm(S_.mon.item) not in CHOICE:
+            if S_.mon.locked and norm(S_.mon.item or S_.mon.hid_item) not in CHOICE:        # (매직룸으로 가려진 구애 아이템은 고정이 유지된다)
                 S_.mon.locked = None
 
     def _run_move(self, st, i, mv, mname, acts, rng, switch_policy):
@@ -1390,7 +1395,7 @@ class Engine:
         counter_fail = norm(mv["name"]) in ("counter", "mirrorcoat", "metalburst") and (
             not st.last_hit[i] or {"counter": "special", "mirrorcoat": "physical"}.get(norm(mv["name"])) == st.last_cat[i])
         if norm(bm.ability) in ("protean", "libero") and "protean" not in bm.vol and not counter_fail and bm.types != [mv["type"]] \
-                and (mv["target"] in NON_FOE_TARGETS or st.sides[1 - i].mon.alive):      # 대상이 없으면 변환기 계열 특성은 발동하지 않는다
+                and mv["target"] != "adjacentAlly" and (mv["target"] in NON_FOE_TARGETS or st.sides[1 - i].mon.alive):      # 대상이 없으면 변환기 계열 특성은 발동하지 않는다
             bm.vol.add("protean")
             bm.types = [mv["type"]]
         o = 1 - i
@@ -1404,9 +1409,13 @@ class Engine:
             return
         if foe_target and D.semi is not None and norm(bm.ability) != "noguard" and norm(D.ability) != "noguard" and norm(mv["name"]) not in D.semi:
             self._say(st, "  빗나감(반무적 상태)")
+            self._rampage_abort(st, bm, rng)
+            self._self_destruct_fail(st, i, mv)
             return
         if foe_target and st.terrain == "psychic" and self._grounded(D) and self._priority(st, i, mv) > 0:
             self._say(st, "  사이코필드가 선공기를 막음")
+            self._rampage_abort(st, bm, rng)
+            self._self_destruct_fail(st, i, mv)
             return
         if foe_target and self._ability_blocks(st, i, o, mv, rng):
             return
@@ -1607,7 +1616,8 @@ class Engine:
             return True
         if mv["name"].lower() == "blizzard" and self.wx(st) == "snow":
             return True
-        stage = max(-6, min(6, A.boosts.get("accuracy", 0) - (0 if dab == "unaware" else D.boosts.get("evasion", 0))))
+        eva_ = 0 if (dab == "unaware" or (mv.get("extra") or {}).get("ignoreEvasion")) else D.boosts.get("evasion", 0)       # 성스러운칼 등은 상대의 회피 단계를 무시
+        stage = max(-6, min(6, (0 if (norm(D.ability) == "unaware" and False) else A.boosts.get("accuracy", 0)) - eva_))
         ratio = (3 + stage) / 3 if stage >= 0 else 3 / (3 - stage)
         return rng.random() * 100 < math.floor(a * ratio)
 
@@ -2321,6 +2331,18 @@ class Engine:
             else:
                 self._sfail = True
             return
+        if key == "corrosivegas":               # 부식가스: 상대의 도구를 없앤다 (끈적끈적은 막고, 대타는 막음)
+            if D.alive and D.sub == 0 and D.item and norm(D.ability) != "stickyhold" and not self._own_stone(D):
+                D.item = ""
+            else:
+                self._sfail = True
+            return
+        if key == "clangoroussoul":             # 영혼의소리: 최대 HP 33% 를 잃고 모든 능력 +1
+            if not (A.hp <= A.maxhp * 33 / 100 or A.maxhp == 1):
+                self.hp_change(st, i, A, -(A.maxhp * 33 // 100), key)
+            else:
+                self._sfail = True
+                return
         if key == "noretreat" and "noretreat" in A.vol:
             self._sfail = True
             return
@@ -2782,6 +2804,10 @@ class Engine:
                     self.change_boost(st, i, bm, minus_, -1)
 
         self._opportunist_flush(st)
+        for i in (0, 1):
+            m_ = st.sides[i].mon
+            if m_.alive and norm(m_.ability) == "hungerswitch" and not m_.orig:       # 배고픔스위치(order 29): 매 턴 끝에 모양이 바뀐다
+                m_.hangry = not m_.hangry
         for i in (0, 1):
             st.sides[i].mon.vol.discard("roost")
         for i in (0, 1):
