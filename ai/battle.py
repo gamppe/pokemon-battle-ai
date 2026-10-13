@@ -31,7 +31,7 @@ NO_TRACE = {"trace", "imposter", "illusion", "multitype", "stancechange", "schoo
             "flowergift", "forecast", "receiver", "poweroofalchemy", "powerofalchemy", "protosynthesis", "quarkdrive", "wonderguard", "poisonpuppeteer",
             "embodyaspectcornerstone", "embodyaspecthearthflame", "embodyaspectteal", "embodyaspectwellspring"}
 NO_SWAP = {"wonderguard", "multitype", "illusion", "stancechange", "schooling", "comatose", "shieldsdown", "disguise", "rkssystem", "battlebond", "powerconstruct", "zenmode", "gulpmissile", "iceface", "neutralizinggas", "asone", "commander", "hungerswitch", "terashift", "zerotohero"}
-MULTI_ACCURACY = {"tripleaxel", "triplekick"}
+MULTI_ACCURACY = {"tripleaxel", "triplekick", "populationbomb"}
 MOLD_BREAKERS = {"moldbreaker", "teravolt", "turboblaze"}
 
 
@@ -382,6 +382,9 @@ class Engine:
             fl.add("target_switched_in")
         if "minimize" in D.vol:
             fl.add("target_minimized")
+        if D.semi is not None and move_key in {"dig": ("earthquake", "magnitude"), "dive": ("surf", "whirlpool"), "fly": ("gust", "twister"),
+                                               "bounce": ("gust", "twister")}.get(D.charge, ()):
+            fl.add("target_minimized_semi")                  # 땅파기 중 지진 등: 피해 2배
         if "electrify" in A.vol:
             fl.add("retype:Electric")
         if pb:
@@ -2126,6 +2129,8 @@ class Engine:
         self._say(st, f"  미래공격 {D.name} -{dmg}")
         hp_before = D.hp
         self.hp_change(st, tgt_side, D, -dmg, mv["name"])
+        if dmg > 0 and src.alive and st.sides[1 - tgt_side].mon is src and norm(src.item) == "lifeorb" and norm(src.ability) not in ("magicguard", "sheerforce"):
+            self.hp_change(st, 1 - tgt_side, src, -max(1, src.maxhp // 10), "생명의구슬")        # 미래예지도 기술이라서 쓴 포켓몬이 나와 있으면 반동을 받는다
         if D.alive:
             self.run_hook(st, tgt_side, D, "on_hit_taken", rng, mv=mv, dmg=dmg, foe_side=1 - tgt_side)        # 스태미나 등 피격 반응
             if D.alive:
@@ -2358,6 +2363,13 @@ class Engine:
                 return
         if key == "noretreat" and "noretreat" in A.vol:
             self._sfail = True
+            return
+        if key in ("magneticflux", "gearup"):                  # 자기장조작/기어업: 플러스/마이너스 특성의 포켓몬만 오른다 (싱글: 자신)
+            if norm(A.ability) in ("plus", "minus"):
+                for k_ in (("def", "spd") if key == "magneticflux" else ("atk", "spa")):
+                    self.change_boost(st, i, A, k_, 1)
+            else:
+                self._sfail = True
             return
         if key == "instruct":                                  # 지시: 대상이 마지막에 쓴 기술을 곧바로 한 번 더 쓰게 한다
             lm = D.last_move
@@ -2785,7 +2797,7 @@ class Engine:
             if bm.alive and "curse" in bm.vol and norm(bm.ability) != "magicguard":
                 self.hp_change(st, i, bm, -max(1, bm.maxhp // 4), "저주")
             if bm.alive and "saltcure" in bm.vol:
-                self.hp_change(st, i, bm, -max(1, bm.maxhp // (4 if ("Water" in bm.types or "Steel" in bm.types) else 8)), "소금절임")
+                self.hp_change(st, i, bm, -max(1, bm.maxhp // (8 if ("Water" in bm.types or "Steel" in bm.types) else 16)), "소금절임")        # 챔피언스: 1/8, 1/16
             if bm.alive and bm.trap and bm.trap_src and (
                     st.sides[bm.trap_src[0]].active != bm.trap_src[1] or not st.sides[bm.trap_src[0]].mon.alive
                     or st.sides[bm.trap_src[0]].mon.active_turns == 0):      # 속박한 쪽이 이번 턴에 막 나왔어도(되돌아옴) 풀린다 (!source.activeTurns)

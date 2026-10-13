@@ -665,6 +665,8 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
                         and (row["cond"].get("move_category", "").split("|") and mv["category"] in row["cond"]["move_category"].split("|")):
                     fch.mul(row["value"]); c.used.append(row["label"])
         d = fch.apply(d)
+        if "target_minimized_semi" in flags:
+            d = modify(d, 2)
         if "target_minimized" in flags and "minimize" in mv["flags"]:      # 작아지기 상태의 상대에게 몸집 기술은 2배
             d = modify(d, 2)
         if d == 0:
