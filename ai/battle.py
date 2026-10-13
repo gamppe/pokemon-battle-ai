@@ -100,6 +100,7 @@ class BMon:
     oct_src: tuple | None = None              # 문어꼼짝 (side, active)
     trap2_src: tuple | None = None            # 영혼묶기 등 'trapped' (side, active)
     stat_over: dict = field(default_factory=dict)   # 수치 덮어쓰기 (파워스플릿 등; 교체하면 원래대로)
+    hero: bool = False                        # 파밀리 히어로폼 (교체로 나간 뒤 영구)
     hangry: bool = False                      # 모르페코 배고픈 모양
     stock_d: int = 0                          # 비축하기로 실제로 오른 방어/특방 단계
     stock_s: int = 0
@@ -339,7 +340,7 @@ class Engine:
     def spec_of(self, bm: BMon):
         s = bm.spec
         return dict(sid=bm.sid, ability=bm.ability, item=bm.item, nature=s.get("nature", "Serious"), sp=s.get("sp", {}),
-                    boosts=dict(bm.boosts), status=bm.status, hp_frac=bm.hp / bm.maxhp, gender=s.get("gender", "N"), types=self.types_of(bm), stat_over=dict(bm.stat_over), hangry=bm.hangry,
+                    boosts=dict(bm.boosts), status=bm.status, hp_frac=bm.hp / bm.maxhp, gender=s.get("gender", "N"), types=self.types_of(bm), stat_over=dict(bm.stat_over), hangry=bm.hangry, hero=bm.hero,
                     grounded_vol=bool("smackdown" in bm.vol or "ingrain" in bm.vol), levitating=bool(bm.magnet))
 
     def field_for(self, st, defender_side):
@@ -868,6 +869,8 @@ class Engine:
             old.ate_berry = False
             old.opp, old.cud_berry, old.cud_n = {}, "", 0
             old.stat_over = {}
+            if norm(old.ability) == "zerotohero" and old.sid == "palafin" and not old.orig and old.alive:
+                old.hero = True                                           # 제로투히어로: 교체로 나가면 히어로폼 (이후 계속 유지)
             old.mim_t = None
             old.hangry = False
             old.magnet, old.syrup_n, old.oct_src, old.trap2_src = 0, 0, None, None
@@ -1525,7 +1528,9 @@ class Engine:
         t = mv["type"]
         if any(self.data.type_chart.get((t, x), 1.0) == 0 for x in self.types_of(D)):
             return not (t == "Ground" and any(r["code"] == "ground_immunity" for r in self.data.item_fx.get(norm(D.item), [])))
-        return t == "Ground" and not self._grounded(D)
+        A_ = getattr(self, "_cur_att", None)
+        ign = A_ is not None and norm(A_.ability) in MOLD_BREAKERS and norm(D.ability) in ("levitate", "eelevate")      # 틀깨기는 부유 특성을 무시
+        return t == "Ground" and not ign and not self._grounded(D)
 
     def _ability_blocks(self, st, i, o, mv, rng):
         """상대 특성이 기술을 무효화/흡수하는 경우 (DB immunity 행). True 면 기술은 더 진행하지 않는다"""
@@ -1669,6 +1674,7 @@ class Engine:
 
     def _damage_move(self, st, i, o, mv, rng, switch_policy):
         A, D = st.sides[i].mon, st.sides[o].mon
+        self._cur_att = A
         key = norm(mv["name"])
         if "contact" in mv["flags"] and (norm(A.ability) == "longreach" or (A.item and not (A.item and "embargo" in A.vol) and (
                 norm(A.item) == "protectivepads" or (norm(A.item) == "punchingglove" and "punch" in mv["flags"])))):

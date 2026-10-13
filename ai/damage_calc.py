@@ -72,8 +72,11 @@ class Mon:
 
 def make_mon(data: GameData, spec: dict) -> Mon:
     p = data.pokemon[spec["sid"]]
+    base_ = p["base"]
+    if spec.get("hero") and spec["sid"] == "palafin":                  # 파밀리-히어로 종족값 (자료에 별도 항목이 없어 직접 지정)
+        base_ = dict(base_, atk=160, def_=97, spa=106, spd=87)
     m = Mon(spec["sid"], spec.get("ability", ""), spec.get("item", ""), spec.get("nature", "Serious"), spec.get("sp", {}),
-            spec.get("boosts", {}), spec.get("status"), spec.get("hp_frac"), list(spec.get("types") or p["types"]), p["base"], name=p["name"])
+            spec.get("boosts", {}), spec.get("status"), spec.get("hp_frac"), list(spec.get("types") or p["types"]), base_, name=p["name"])
     sp = {k: m.sp.get(k, 0) for k in ("hp", "atk", "def", "spa", "spd", "spe")}
     plus, minus = data.natures.get(norm(m.nature), (None, None))
     m.stats = {}
@@ -312,7 +315,16 @@ def item_active_ability_ok(c):
 
 
 def type_effectiveness(c: Ctx, move_type: str, defender: Mon):
-    """(typeMod, immune)"""
+    """(typeMod, immune) -- 플라잉프레스처럼 두 번째 타입(extra_type)이 있는 기술은 두 타입의 배율을 곱한다"""
+    mod, immune = _type_eff_single(c, move_type, defender)
+    for r in c.move.get("rules", []):
+        if r["type"] == "effectiveness_mod" and r["params"].get("extra_type"):
+            m2, i2 = _type_eff_single(c, r["params"]["extra_type"], defender)
+            mod, immune = mod + m2, immune or i2
+    return mod, immune
+
+
+def _type_eff_single(c: Ctx, move_type: str, defender: Mon):
     mod, immune = 0, False
     ign = (c.move.get("extra") or {}).get("ignoreImmunity")
     ghost_ok = has_ability_code(c, c.A, "ghost_immunity") and move_type in ("Normal", "Fighting")   # 배짱: 고스트에도 적중
