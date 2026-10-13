@@ -1929,7 +1929,7 @@ class Engine:
                 st.terrain, st.terrain_turns = None, 0
             elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard" and A.alive and norm(A.ability) != "sheerforce":      # 대타를 때려도 깐다 (onAfterSubDamage)
                 self._side_condition(st, o, {"stealth_rock": "stealthrock"}.get(r["params"]["hazard"], r["params"]["hazard"]), swap=True)
-        if mv["force_switch"] and not mv["self_switch"] and D.alive and not hit_sub and D.sub == 0 and norm(D.ability) != "suctioncups" and "ingrain" not in D.vol:
+        if mv["force_switch"] and not mv["self_switch"] and D.alive and not hit_sub and D.sub == 0 and norm(D.ability) != "suctioncups" and "ingrain" not in D.vol and not (norm(D.ability) == "guarddog" and norm(A.ability) not in MOLD_BREAKERS):
             cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]        # 드래곤테일 등: 끌어내기가 레드카드/탈출버튼보다 먼저
             if cand:
                 self._switch_in(st, o, rng, to=rng.choice(cand))
@@ -2210,6 +2210,8 @@ class Engine:
         src, D = fut["src"], st.sides[tgt_side].mon
         F = self.field_for(st, tgt_side)
         sa, sd = self.spec_of(src), self.spec_of(D)
+        if not src.alive:
+            sa["item"], sa["ability"] = "", ""                      # 쓰러진 사용자의 도구/특성 효과는 적용되지 않는다
         r = calc(self.data, sa, sd, mv["name"], F, False, hit=1, proc=False, flags=frozenset({"progress", "real_immunity"}))
         if not r["rolls"]:
             self._say(st, "  미래공격: 효과 없음")
@@ -2732,7 +2734,7 @@ class Engine:
             return
         if mv["force_switch"]:
             cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
-            if cand and D.alive and norm(D.ability) not in ("suctioncups",) and "ingrain" not in D.vol:
+            if cand and D.alive and norm(D.ability) not in ("suctioncups",) and "ingrain" not in D.vol and not (norm(D.ability) == "guarddog" and norm(A.ability) not in MOLD_BREAKERS):
                 self._switch_in(st, o, rng, to=rng.choice(cand))
             return
         for e in mv["effects"]:
