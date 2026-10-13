@@ -2431,6 +2431,15 @@ class Engine:
         if key == "noretreat" and "noretreat" in A.vol:
             self._sfail = True
             return
+        if key == "recycle":                                   # 재활용: 마지막으로 쓴 도구를 되살린다 (열매면 조건이 맞을 때 바로 먹는다)
+            if not A.item and A.last_item:
+                A.item, A.last_item = A.last_item, ""
+                self.run_hook(st, i, A, "on_damage_taken_hp", rng, only="item")
+                if A.status and A.item:
+                    self._status_item_cure(st, A, A.status)
+            else:
+                self._sfail = True
+            return
         if key == "acupressure":                               # 지압: 무작위 능력 하나를 2단계 올린다 (최대인 능력은 제외, 전부 최대면 실패)
             names = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]
             ok_ = [s_ for s_ in names if A.boosts.get(s_, 0) < 6]
