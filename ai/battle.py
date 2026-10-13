@@ -1416,13 +1416,9 @@ class Engine:
                 self._say(st, "  충전")
                 st.lastmove_any = norm(mname)
                 return
-        self._zero_hit = False
-        foe_up_ = st.sides[1 - i].mon.alive
         self._run_move(st, i, mv, mname, acts, rng, switch_policy)
         if norm(mv["name"]) == "spitup" and bm.stockpile:
             self._unstock(st, i, bm)                          # 분출 뒤 비축 해제
-        if norm(mv["name"]) in ("steelbeam", "mindblown", "chloroblast") and bm.alive and norm(bm.ability) != "magicguard" and not self._zero_hit and foe_up_:       # 대상이 없으면(이미 쓰러짐) 실패 처리가 아니라 반동도 없다
-            self.hp_change(st, i, bm, -math.floor(bm.maxhp / 2 + 0.5), mv["name"])      # 빗나가거나 막혀도 최대 HP 절반을 잃는다 (mindBlownRecoil)
         if mv["type"] == "Electric" and bm.charged:                 # 전기 기술을 쓰고 나면 충전 해제 (onAfterMove)
             bm.charged = 0
         self._update_berries(st, rng)
@@ -1434,6 +1430,15 @@ class Engine:
                 S_.mon.locked = None
 
     def _run_move(self, st, i, mv, mname, acts, rng, switch_policy):
+        """기술 실행 + 빗나가거나 막혀도 생기는 스틸빔류 반동 (따라하기 등으로 불려 나온 기술도 같다)"""
+        self._zero_hit = False
+        foe_up_ = st.sides[1 - i].mon.alive
+        bm = st.sides[i].mon
+        self._run_move_inner(st, i, mv, mname, acts, rng, switch_policy)
+        if norm(mv["name"]) in ("steelbeam", "mindblown", "chloroblast") and bm.alive and norm(bm.ability) != "magicguard" and not self._zero_hit and foe_up_:
+            self.hp_change(st, i, bm, -math.floor(bm.maxhp / 2 + 0.5), mv["name"])      # 빗나가거나 막혀도 최대 HP 절반을 잃는다 (mindBlownRecoil)
+
+    def _run_move_inner(self, st, i, mv, mname, acts, rng, switch_policy):
         """기술 실행 단계 (사용 조건 확인 이후). Copycat 처럼 다른 기술을 불러 쓰는 기술도 이 함수를 다시 호출한다"""
         S = st.sides[i]
         bm = S.mon
@@ -1456,7 +1461,7 @@ class Engine:
             return
         counter_fail = norm(mv["name"]) in ("counter", "mirrorcoat", "metalburst") and (
             not st.last_hit[i] or {"counter": "special", "mirrorcoat": "physical"}.get(norm(mv["name"])) == st.last_cat[i])
-        if norm(bm.ability) in ("protean", "libero") and "protean" not in bm.vol and not counter_fail and bm.types != [mv["type"]] \
+        if norm(bm.ability) in ("protean", "libero") and "protean" not in bm.vol and norm(mv["name"]) != "struggle" and not counter_fail and bm.types != [mv["type"]] \
                 and mv["target"] != "adjacentAlly" and (mv["target"] in NON_FOE_TARGETS or st.sides[1 - i].mon.alive):      # 대상이 없으면 변환기 계열 특성은 발동하지 않는다
             bm.vol.add("protean")
             bm.types = [mv["type"]]
