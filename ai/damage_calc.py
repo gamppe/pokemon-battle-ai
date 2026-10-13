@@ -80,6 +80,8 @@ def make_mon(data: GameData, spec: dict) -> Mon:
         elif minus == k:
             s = tr(tr(s * 90) % 65536 / 100)
         m.stats[k] = s
+    for k, v in (spec.get("stat_over") or {}).items():     # 파워스플릿/가드스플릿/파워트릭/스피드스왑으로 바뀐 수치
+        m.stats[k] = v
     w = p["weight_hg"]                                   # 몸무게(0.1kg 단위) + 무거운금속/가벼운금속 특성
     for r in data.ability_fx.get(norm(m.ability), []):
         if r["code"] == "weight_mult":
@@ -195,6 +197,10 @@ def cond_ok(c: Ctx, cond: dict, me: Mon, foe: Mon, label: str, cat=None):
         elif k in ("same_gender", "opposite_gender"):
             both = c.A.gender in ("M", "F") and c.D.gender in ("M", "F")
             ok = both and ((c.A.gender == c.D.gender) if k == "same_gender" else (c.A.gender != c.D.gender))
+        elif k in ("moves_last", "moves_after_target"):
+            ok = "user_moves_after_target" in c.flags
+        elif k == "target_switched_in":
+            ok = "target_switched_in" in c.flags
         elif k == "flash_fire_active":
             ok = "flash_fire_active" in c.flags
         elif k == "target_side":
@@ -652,4 +658,4 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
     for u in c.used:
         if u not in seen:
             seen.append(u)
-    return dict(rolls=rolls, reason=None, used=seen, unsupported=c.unsupported, mid=dict(moveType=mv['type'], bp0=bp0, bp=bp, typeMod=mod, atk=atk, dfn=dfn))
+    return dict(rolls=rolls, reason=None, used=seen, unsupported=c.unsupported, mid=dict(moveType=mv['type'], category=mv['category'], flags=mv['flags'], bp0=bp0, bp=bp, typeMod=mod, atk=atk, dfn=dfn))

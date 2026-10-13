@@ -94,6 +94,8 @@ class BMon:
     healblock: int = 0
     yawn: int = 0
     rampage: int = 0
+    stat_over: dict = field(default_factory=dict)   # 수치 덮어쓰기 (파워스플릿 등; 교체하면 원래대로)
+    syrup: bool = False                       # 달콤시럽(Supersweet Syrup)은 배틀 중 한 번만 발동
     uproar: int = 0                           # 소란피기 남은 턴 (걸려 있는 동안 기술이 고정되고 아무도 잠들지 않는다)
     prev_move: str = ""
     throat: int = 0
@@ -325,7 +327,7 @@ class Engine:
     def spec_of(self, bm: BMon):
         s = bm.spec
         return dict(sid=bm.sid, ability=bm.ability, item=bm.item, nature=s.get("nature", "Serious"), sp=s.get("sp", {}),
-                    boosts=dict(bm.boosts), status=bm.status, hp_frac=bm.hp / bm.maxhp, gender=s.get("gender", "N"), types=self.types_of(bm))
+                    boosts=dict(bm.boosts), status=bm.status, hp_frac=bm.hp / bm.maxhp, gender=s.get("gender", "N"), types=self.types_of(bm), stat_over=dict(bm.stat_over))
 
     def field_for(self, st, defender_side):
         scr = tuple(k for k in SCREENS if st.sides[defender_side].screens.get(k, 0) > 0)
@@ -367,6 +369,8 @@ class Engine:
         if "flashfire" in A.vol:
             fl.add("flash_fire_active")
         fl.add(f"times_attacked:{A.times_attacked}")
+        if D.active_turns == 0:
+            fl.add("target_switched_in")
         if pb:
             fl.add("pb2")
         if extra:
@@ -482,6 +486,8 @@ class Engine:
         bm.last_item, bm.used_turn = it, st.turn
         if norm(it).endswith("berry"):
             bm.ate_berry = True
+            if norm(bm.ability) == "cheekpouch" and bm.alive:             # 볼주머니: 열매를 먹으면 최대 HP 1/3 회복
+                self.hp_change(st, 0 if st.sides[0].mon is bm else 1, bm, bm.maxhp // 3, "볼주머니")
             if norm(bm.ability) == "cudchew" and not getattr(self, "_no_cud", False):
                 bm.cud_berry, bm.cud_n = it, 1 if getattr(self, "_eot", False) else 2
         bm.item = ""
@@ -825,6 +831,7 @@ class Engine:
             old.charged = 0
             old.ate_berry = False
             old.opp, old.cud_berry, old.cud_n = {}, "", 0
+            old.stat_over = {}
             old.sub, old.charge, old.semi, old.trap = 0, None, None, 0
             if old.orig:
                 old.spec, old.sid, old.types, old.ability = old.orig
@@ -907,6 +914,10 @@ class Engine:
                 continue
             if r["kind"] == "info" or (r["kind"] == "heal_frac" and r["target"] == "ally"):
                 continue
+            if r["label"].endswith("Supersweet Syrup"):
+                if bm.syrup:
+                    continue
+                bm.syrup = True
             if r["kind"] == "stat_stage" and r["target"] == "foe":
                 if not foe.alive or "substitute" in foe.vol:
                     continue
@@ -959,6 +970,9 @@ class Engine:
             m = S.mon
             if m.alive and norm(m.ability) == "forecast" and m.sid.startswith("castform"):
                 m.types = [{"sun": "Fire", "rain": "Water", "snow": "Ice"}.get(self.wx(st), "Normal")]
+            elif m.alive and norm(m.ability) == "mimicry":                # 의태: 필드에 맞춰 타입이 바뀌고, 필드가 사라지면 원래대로 돌아온다
+                t_ = {"electric": "Electric", "grassy": "Grass", "misty": "Fairy", "psychic": "Psychic"}.get(st.terrain)
+                m.types = [t_] if t_ else list(self.data.pokemon[m.sid]["types"]) if m.sid in self.data.pokemon else m.types
 
     def _set_weather(self, st, w, bm):
         st.weather = w
@@ -1012,6 +1026,8 @@ class Engine:
             ks = [moves.index(bm.locked)]
         else:
             ks = list(range(len(moves)))
+        if "torment" in bm.vol and bm.last_move and bm.last_move != "struggle":          # 트집: 같은 기술을 연속으로 쓸 수 없다
+            ks = [k for k in ks if norm(moves[k]) != bm.last_move]
         if bm.healblock:                                    # 힐블록: 회복 기술은 고를 수 없다
             ks = [k for k in ks if "heal" not in self.data.moves[norm(moves[k])]["flags"]]
         if bm.taunt:
@@ -1312,6 +1328,8 @@ class Engine:
                 st.lastmove_any = norm(mname)
                 return
         self._run_move(st, i, mv, mname, acts, rng, switch_policy)
+        if norm(mv["name"]) in ("steelbeam", "mindblown", "chloroblast") and bm.alive and norm(bm.ability) != "magicguard":
+            self.hp_change(st, i, bm, -math.floor(bm.maxhp / 2 + 0.5), mv["name"])      # 빗나가거나 막혀도 최대 HP 절반을 잃는다 (mindBlownRecoil)
         if mv["type"] == "Electric" and bm.charged:                 # 전기 기술을 쓰고 나면 충전 해제 (onAfterMove)
             bm.charged = 0
         self._update_berries(st, rng)
@@ -1343,7 +1361,8 @@ class Engine:
             else:
                 self._say(st, "  실패")
             return
-        counter_fail = norm(mv["name"]) in ("counter", "mirrorcoat", "metalburst") and not st.last_hit[i]
+        counter_fail = norm(mv["name"]) in ("counter", "mirrorcoat", "metalburst") and (
+            not st.last_hit[i] or {"counter": "special", "mirrorcoat": "physical"}.get(norm(mv["name"])) == st.last_cat[i])
         if norm(bm.ability) in ("protean", "libero") and "protean" not in bm.vol and not counter_fail and bm.types != [mv["type"]] \
                 and (mv["target"] in NON_FOE_TARGETS or st.sides[1 - i].mon.alive):      # 대상이 없으면 변환기 계열 특성은 발동하지 않는다
             bm.vol.add("protean")
@@ -1535,6 +1554,10 @@ class Engine:
         if mv["ohko"]:
             return rng.random() < 0.3
         a = acc
+        if dab == "tangledfeet" and "confusion" in D.vol and norm(A.ability) not in MOLD_BREAKERS:
+            a = a * 0.5                                  # 갈지자걸음: 혼란 중이면 회피 2배
+        if norm(A.item) == "zoomlens" and D.moved and A.item and "embargo" not in A.vol:
+            a = a * (4915 / 4096)                        # 줌렌즈: 상대가 이미 움직였다면 명중 x1.2
         if aab == "compoundeyes":
             a = a * 1.3
         if norm(A.item) == "widelens":
@@ -1566,6 +1589,9 @@ class Engine:
     def _damage_move(self, st, i, o, mv, rng, switch_policy):
         A, D = st.sides[i].mon, st.sides[o].mon
         key = norm(mv["name"])
+        if "contact" in mv["flags"] and (norm(A.ability) == "longreach" or (A.item and not (A.item and "embargo" in A.vol) and (
+                norm(A.item) == "protectivepads" or (norm(A.item) == "punchingglove" and "punch" in mv["flags"])))):
+            mv = dict(mv, flags=set(mv["flags"]) - {"contact"})            # 접촉하지 않는 공격 (Long Reach / Protective Pads / Punching Glove): 접촉 반응이 없다
         hit_rule = next((r["params"].get("hits") for r in mv["rules"] if r["type"] == "power_formula" and r["params"].get("formula") == "hit_index"), None)
         nhits = hit_rule if hit_rule else mv["max_hits"] if mv["min_hits"] == mv["max_hits"] else (
             rng.choices([2, 3, 4, 5], [35, 35, 15, 15])[0] if (mv["min_hits"], mv["max_hits"]) == (2, 5) else rng.randint(mv["min_hits"], mv["max_hits"]))
@@ -1643,6 +1669,8 @@ class Engine:
                 dmg = rng.choice(r["rolls"])
                 if r.get("mid", {}).get("moveType"):
                     eff_mv = dict(mv, type=r["mid"]["moveType"])
+                    if r["mid"].get("category") and r["mid"]["category"] != mv["category"]:        # 셸암즈 등: 계산에서 정해진 분류/접촉 여부를 따른다
+                        eff_mv = dict(eff_mv, category=r["mid"]["category"], flags=set(r["mid"]["flags"]) | (set(eff_mv["flags"]) & {"noother"}))
                 if D.item and norm(D.item).endswith("berry") and "item:" + D.item in r.get("used", []):
                     berry_used = True
                 if "glaiverush" in D.vol:
@@ -1787,7 +1815,7 @@ class Engine:
         if "recharge" in mv["flags"]:
             A.recharge = True
         for r in mv["rules"]:
-            if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and A.alive and total:
+            if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and A.alive and total and key not in ("steelbeam", "mindblown", "chloroblast"):
                 self.hp_change(st, i, A, -math.floor(A.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
             elif r["params"].get("effect") == "clear_terrain" and landed and st.terrain:       # 스틸롤러/아이스스피너: 맞히면 필드를 없앤다 (대타 포함)
                 st.terrain, st.terrain_turns = None, 0
@@ -1848,6 +1876,18 @@ class Engine:
         if norm(D.ability) == "cursedbody" and A_.alive and not A_.disabled and norm(mv["name"]) != "struggle" \
                 and norm(A_.ability) not in MOLD_BREAKERS and rng.random() < 0.3:        # 저주받은바디: 맞으면 30% 로 공격한 기술을 봉인
             A_.disabled, A_.disable_n = norm(mv["name"]), 4
+        dab_ = norm(D.ability)
+        if dab_ in ("mummy", "lingeringaroma", "wanderingspirit") and "contact" in mv["flags"] and A_.alive and D.alive:      # 접촉한 공격자의 특성을 바꾼다
+            flags_ = lambda x_, f_: f_ in self.abil_flags.get(norm(x_.ability), [])
+            if dab_ == "wanderingspirit":
+                if not flags_(A_, "failskillswap") and not flags_(D, "failskillswap"):
+                    A_.abil_orig, D.abil_orig = A_.abil_orig or A_.ability, D.abil_orig or D.ability
+                    A_.ability, D.ability = D.ability, A_.ability
+                    self._run_switch_in(st, i, A_, rng, only="ability")
+                    self._run_switch_in(st, o, D, rng, only="ability")
+            elif not flags_(A_, "cantsuppress") and norm(A_.ability) != dab_:
+                A_.abil_orig = A_.abil_orig or A_.ability
+                A_.ability = D.ability
         if norm(D.ability) in ("electromorphosis", "windpower"):      # 맞으면 충전 상태 (onDamagingHit -> addVolatile('charge'))
             D.charged = 2
         if "beakblast" in D.vol and "contact" in mv["flags"] and st.sides[i].mon.alive:      # 부리캐논 대기 중 접촉 -> 공격자 화상 (타마다)
@@ -1944,6 +1984,12 @@ class Engine:
                 if tgt.taunt == 0 and not immune:
                     tgt.taunt = 3 + (1 if tgt.active_turns and tgt.moved else 0)
                     self._mental_herb(st, tgt)
+            elif code == "torment":
+                immune = any((r["code"] or "").startswith("volatile:") and "torment" in r["code"]
+                             for r in self.data.ability_fx.get(norm(tgt.ability), []) if r["hook"] == "immunity")
+                if "torment" not in tgt.vol and not immune:
+                    tgt.vol.add("torment")
+                    self._mental_herb(st, tgt)
             elif code == "throatchop":
                 tgt.throat = tgt.throat or 2          # 이미 걸려 있으면 갱신되지 않는다
             elif code == "healblock":
@@ -2004,7 +2050,8 @@ class Engine:
 
     def _mental_herb(self, st, bm):
         """멘탈허브: 도발/앙코르/힐블록 등이 걸리면 곧바로 풀고 소모한다 (onUpdate)"""
-        if bm.alive and norm(bm.item) == "mentalherb" and (bm.taunt or bm.encore or bm.healblock or bm.disabled):
+        if bm.alive and norm(bm.item) == "mentalherb" and (bm.taunt or bm.encore or bm.healblock or bm.disabled or "torment" in bm.vol):
+            bm.vol.discard("torment")
             bm.taunt = bm.encore = bm.healblock = bm.disable_n = 0
             bm.encore_move = ""
             bm.disabled = ""
@@ -2204,6 +2251,38 @@ class Engine:
                     self._forecast_sync(st)
             else:
                 self._sfail = True
+            return
+        if key in ("powersplit", "guardsplit", "powertrick", "speedswap", "heartswap", "guardswap", "powerswap", "psychup", "topsyturvy"):
+            if not D.alive and key != "powertrick":
+                self._sfail = True
+                return
+            cur = lambda m_: make_mon(self.data, self.spec_of(m_)).stats
+            if key in ("powersplit", "guardsplit"):
+                ks = ("atk", "spa") if key == "powersplit" else ("def", "spd")
+                ca, cd = cur(A), cur(D)
+                for k_ in ks:
+                    v_ = (ca[k_] + cd[k_]) // 2
+                    A.stat_over[k_] = D.stat_over[k_] = v_
+            elif key == "powertrick":
+                ca = cur(A)
+                A.stat_over["atk"], A.stat_over["def"] = ca["def"], ca["atk"]
+            elif key == "speedswap":
+                ca, cd = cur(A), cur(D)
+                A.stat_over["spe"], D.stat_over["spe"] = cd["spe"], ca["spe"]
+            elif key in ("heartswap", "guardswap", "powerswap"):
+                ks = {"heartswap": ("atk", "def", "spa", "spd", "spe", "accuracy", "evasion"), "guardswap": ("def", "spd"), "powerswap": ("atk", "spa")}[key]
+                for k_ in ks:
+                    A.boosts[k_], D.boosts[k_] = D.boosts.get(k_, 0), A.boosts.get(k_, 0)
+            elif key == "psychup":
+                A.boosts = dict(D.boosts)
+                A.vol.discard("focusenergy")
+                if "focusenergy" in D.vol:
+                    A.vol.add("focusenergy")
+            else:                                  # 거꾸로 : 상대의 능력 변화 부호를 뒤집는다
+                if not any(D.boosts.values()):
+                    self._sfail = True
+                else:
+                    D.boosts = {k_: -v_ for k_, v_ in D.boosts.items()}
             return
         if key == "tidyup":                     # 대청소: 양쪽의 설치기와 대타를 없애고 공격/속도 +1
             for S_ in st.sides:
@@ -2409,7 +2488,7 @@ class Engine:
                     self._status_item_cure(st, A, "slp")
                 handled = True
         if key == "shedtail":
-            cost = A.maxhp // 2
+            cost = -(-A.maxhp // 2)
             if A.hp > cost and len(st.sides[i].alive_idx()) > 1 and A.sub == 0:
                 self.hp_change(st, i, A, -cost, "꼬리자르기")
                 A.sub = A.maxhp // 4
@@ -2462,7 +2541,7 @@ class Engine:
                 self._forecast_sync(st)
         for i in order:
             bm = st.sides[i].mon
-            if bm.alive and self.wx(st) == "sand" and not any(t in ("Rock", "Ground", "Steel") for t in bm.types) and \
+            if bm.alive and self.wx(st) == "sand" and bm.charge not in ("dig", "dive") and not any(t in ("Rock", "Ground", "Steel") for t in bm.types) and \
                     norm(bm.ability) not in ("magicguard", "overcoat", "sandveil", "sandrush", "sandforce") and norm(bm.item) != "safetygoggles":
                 self.hp_change(st, i, bm, -max(1, bm.maxhp // 16), "모래바람")
         for i in order:                                       # 효과 종류별로 모든 포켓몬을 처리한다 (날씨 1 -> 미래예지/희망사항 -> 필드·도구 -> 씨뿌리기 8 -> 독/화상 9~10)
@@ -2492,6 +2571,8 @@ class Engine:
                     if not self._cond_ok(r["cond"], st, i, bm):
                         continue
                     if r["label"].endswith("Speed Boost") and bm.active_turns == 0:
+                        continue
+                    if r["target"] == "ally":            # 치유의마음/대접 등은 아군 대상 (싱글에는 대상이 없다)
                         continue
                     if r["kind"] in ("heal_frac", "damage_frac", "cure_status", "stat_stage"):
                         self.apply_row(st, r["label"], r, i, bm, rng)
