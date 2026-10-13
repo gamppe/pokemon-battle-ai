@@ -242,7 +242,7 @@ class Engine:
             return
         extra = 0
         o = st.sides[1 - i].mon
-        if o.alive and norm(o.ability) == "pressure" and (mv["target"] not in ("self", "adjacentAlly", "allySide", "allyTeam", "adjacentAllyOrSelf", "allies", "foeSide") or "mustpressure" in mv["flags"]):
+        if o.alive and norm(o.ability) == "pressure" and not (norm(mv["name"]) == "curse" and "Ghost" not in bm.types) and (mv["target"] not in ("self", "adjacentAlly", "allySide", "allyTeam", "adjacentAllyOrSelf", "allies", "foeSide") or "mustpressure" in mv["flags"]):
             extra = 1
         bm.pp[k] = max(0, bm.pp[k] - 1 - extra)
 
@@ -866,7 +866,9 @@ class Engine:
         passed = None
         if to is not None:
             old = S.mon
-            if carry:
+            if carry == "sub":
+                passed = ({}, old.sub, set(), {})
+            elif carry:
                 passed = (dict(old.boosts), old.sub, {v for v in old.vol if v in ("leechseed", "focusenergy", "curse", "confusion")},
                           dict(taunt=old.taunt, healblock=old.healblock, perish=old.perish, confusion=old.confusion))     # Baton Pass 로 넘어가는 상태 (noCopy 가 아닌 것)
             old.boosts, old.vol, old.locked, old.protect_n, old.recharge = {}, set(), None, 0, False
@@ -1319,6 +1321,7 @@ class Engine:
     def _do_action(self, st, i, act, acts, rng, switch_policy):
         S = st.sides[i]
         bm = S.mon
+        bm.moved = True                                      # 이번 턴 행동 차례가 지나갔다 (충전/풀죽음/상태이상으로 못 움직여도)
         if act[0] == "r" or bm.recharge:
             bm.recharge = False
             return
@@ -2808,8 +2811,9 @@ class Engine:
             cost = -(-A.maxhp // 2)
             if A.hp > cost and len(st.sides[i].alive_idx()) > 1 and A.sub == 0:
                 self.hp_change(st, i, A, -cost, "꼬리자르기")
+                self._hp_berry_update(st, rng)                       # 교체되기 전에 Update 로 HP 열매를 먹는다
                 A.sub = A.maxhp // 4
-                self._self_switch(st, i, rng, True)
+                self._self_switch(st, i, rng, "sub")                         # 꼬리자르기는 대타만 넘긴다
             return
         if mv["self_switch"] and A.alive and key not in ("partingshot", "revivalblessing"):
             self._self_switch(st, i, rng, key == "batonpass")
