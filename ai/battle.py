@@ -918,6 +918,7 @@ class Engine:
             bm.hp, bm.status = bm.maxhp, None
             S.heal_next = None
         def effects():                                      # 해저드 + 등장 효과 (Showdown 의 runSwitch)
+            hp_in = bm.hp
             if not self._item_is(bm, "heavydutyboots"):
                 if S.hazards.get("stealthrock") and norm(bm.ability) != "magicguard":
                     eff = 1.0
@@ -940,6 +941,13 @@ class Engine:
             self._forecast_sync(st)
             self._update_berries(st, rng)                        # 긴장감 보유자가 나가면 막혀 있던 열매를 바로 먹는다
             self._opportunist_flush(st)
+            if bm.alive and S.mon is bm and norm(bm.ability) in ("emergencyexit", "wimpout") and hp_in * 2 > bm.maxhp >= bm.hp * 2 \
+                    and st.winner is None and not defer:                      # 등장하며 해저드로 절반 이하가 되면 바로 다시 교체한다
+                cand_ = [j for j in S.alive_idx() if j != S.active]
+                if cand_:
+                    self._say(st, f"  {bm.name} 비상탈출")
+                    j_ = self._policy(st, side) if self._policy else cand_[0]
+                    self._switch_in(st, side, rng, to=j_ if j_ in cand_ else cand_[0])
         if defer:                                           # 동시에 교체되면 등장 효과는 모두 나온 뒤 현재 속도 순으로 처리된다
             return effects
         effects()
