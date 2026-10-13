@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import dataclasses
 from dataclasses import dataclass, field
 
 from .gamedata import GameData, norm
@@ -473,7 +474,7 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
     # 메가솔: 공격하는 동안 (양쪽 포켓몬 모두에 대한) 날씨 판정이 전부 쾌청. 날씨 무효화 특성보다 우선한다.
     megasol = any(r["code"] == "treat_weather_as:sun" for r in data.ability_fx.get(norm(A.ability), []))
     if megasol and mega_sol_mode == "field_sun":
-        F = Field("sun", F.terrain, F.screens)
+        F = dataclasses.replace(F, weather="sun")
     # 날씨 무효화(Cloud Nine 등): 필드에 이 특성이 있으면 날씨 효과가 모두 사라진다
     elif any(r["code"] == "negate_weather" for m_ in (A, D) for r in data.ability_fx.get(norm(m_.ability), [])):
         F = Field(None, F.terrain, F.screens)

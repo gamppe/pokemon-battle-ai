@@ -162,6 +162,7 @@ class State:
     trick_room: int = 0
     magic_room: int = 0
     wonder_room: int = 0
+    fairy_lock: int = 0
     gravity: int = 0
     lastmove_any: str = ""             # 전투 전체에서 마지막으로 쓰인 기술 (Copycat)
     turn: int = 0
@@ -236,7 +237,7 @@ class Engine:
             return
         extra = 0
         o = st.sides[1 - i].mon
-        if o.alive and norm(o.ability) == "pressure" and mv["target"] not in ("self", "adjacentAlly", "allySide", "allyTeam", "adjacentAllyOrSelf", "allies"):
+        if o.alive and norm(o.ability) == "pressure" and (mv["target"] not in ("self", "adjacentAlly", "allySide", "allyTeam", "adjacentAllyOrSelf", "allies") or "mustpressure" in mv["flags"]):
             extra = 1
         bm.pp[k] = max(0, bm.pp[k] - 1 - extra)
 
@@ -393,7 +394,7 @@ class Engine:
                move_key, F.weather, F.terrain, F.screens, F.wonder, F.gravity, crit, hit)
         r = self._dmg_cache.get(key)
         if r is None:
-            r = calc(self.data, sa, sd, mv["name"], F, crit, hit=hit, proc=False, flags=fl)
+            r = calc(self.data, sa, sd, mv["name"], F, crit, hit=hit, proc=None, flags=fl)
             if len(self._dmg_cache) > 200000:
                 self._dmg_cache.clear()
             self._dmg_cache[key] = r
@@ -677,7 +678,7 @@ class Engine:
         new = max(-6, min(6, old + n))
         bm.boosts[stat] = new
         if n > 0 and new != old:
-            bm.raised_turn = st.turn
+            bm.raised_turn = st.turn or 1                    # 배틀 시작 시점의 변화는 첫 턴에 일어난 것으로 본다
             if not getattr(self, "_in_opp", False):                 # 편승: 상대의 능력 상승을 모아 두었다가 따라 올린다
                 for k_ in (0, 1):
                     if st.sides[k_].mon is bm:
@@ -685,7 +686,7 @@ class Engine:
                         if fo_.alive and norm(fo_.ability) == "opportunist":
                             fo_.opp[stat] = fo_.opp.get(stat, 0) + (new - old)
         if n < 0 and new != old:
-            bm.lowered_turn = st.turn
+            bm.lowered_turn = st.turn or 1
             for src, r in self.rows(bm, "on_stat_drop"):
                 if r["kind"] == "stat_stage" and r["cond"].get("by_foe") and from_foe:
                     bm.boosts[r["code"]] = min(6, bm.boosts.get(r["code"], 0) + int(r["value"]))
@@ -1078,7 +1079,7 @@ class Engine:
         bm = st.sides[side].mon
         if norm(bm.item) == "shedshell" or "Ghost" in self.types_of(bm):
             return True
-        if bm.trap or "ingrain" in bm.vol or "noretreat" in bm.vol:
+        if bm.trap or "ingrain" in bm.vol or "noretreat" in bm.vol or st.fairy_lock:
             return False
         for src_ in (bm.oct_src if "octolock" in bm.vol else None, bm.trap2_src if "trapped" in bm.vol else None):
             if src_ and st.sides[src_[0]].active == src_[1] and st.sides[src_[0]].mon.alive:
@@ -1672,7 +1673,7 @@ class Engine:
                 dmg, crit = mv["fixed_damage"] or 50, False
             elif mv["ohko"]:
                 imm = self.rolls(st, i, o, key, False)
-                if imm["reason"] == "immune" or self._chart_immune(mv, D):
+                if imm["reason"] == "immune" or self._chart_immune(mv, D) or (norm(D.ability) == "sturdy" and norm(A.ability) not in MOLD_BREAKERS):
                     self._say(st, "  효과 없음")
                     return
                 dmg, crit = D.hp, False
@@ -1711,7 +1712,10 @@ class Engine:
                         self._say(st, "  실패")
                     self._self_destruct_fail(st, i, mv)
                     return
-                dmg = rng.choice(r["rolls"])
+                rl_ = r["rolls"]
+                if r.get("variants") and rng.random() < r["variants"]["chance"]:            # 변덕레이저: 30% 확률로 위력 2배
+                    rl_ = r["variants"]["proc_rolls"]
+                dmg = rng.choice(rl_)
                 if r.get("mid", {}).get("moveType"):
                     eff_mv = dict(mv, type=r["mid"]["moveType"])
                     if r["mid"].get("category") and r["mid"]["category"] != mv["category"]:        # 셸암즈 등: 계산에서 정해진 분류/접촉 여부를 따른다
@@ -1740,6 +1744,8 @@ class Engine:
                 D.types = list(self.data.pokemon[D.sid]["types"])      # 폼 체인지(Mimikyu-Busted)로 타입이 원래대로 돌아간다
                 self.hp_change(st, o, D, -max(1, D.maxhp // 8), "탈")
                 self._say(st, "  탈 벗겨짐")
+                if key == "fling" and A.item:
+                    self._fling_throw(st, i, o, A, D, rng, False)  # 던지기는 변장이 막아도 도구를 던진다 (열매는 상대가 먹는다)
                 landed += 1
                 late_item = True
                 continue
@@ -1788,30 +1794,8 @@ class Engine:
                 A.ate_berry = True
                 A.last_item, A.used_turn = berry, st.turn
                 A.item = own
-            if key == "fling" and A.item:                       # 던지기: 도구를 상대에게 던져 효과를 주고 도구는 사라진다 (상대가 쓰러지거나 대타여도 도구는 잃는다)
-                thrown = norm(A.item)
-                A.item = ""
-                if not D.alive or hit_sub:
-                    pass
-                elif thrown.endswith("berry"):
-                    own_, last_ = D.item, D.last_item
-                    D.item = thrown
-                    for hook_ in ("on_damage_taken_hp", "on_status"):
-                        for src_, r_ in self.rows(D, hook_):
-                            if src_ == "item" and D.item == thrown:
-                                self.apply_row(st, "item:" + r_["label"].split(":", 1)[1], r_, o, D, rng)
-                    D.ate_berry = True
-                    D.last_item = last_                           # 던져 맞은 열매는 eatItem 이 아니라서 마지막 도구로 기록되지 않는다
-                    D.item = own_
-                elif thrown in ("flameorb", "toxicorb", "lightball", "poisonbarb"):
-                    self.try_status(st, o, D, {"flameorb": "brn", "toxicorb": "tox", "lightball": "par", "poisonbarb": "psn"}[thrown], rng, src_side=i)
-                elif thrown in ("kingsrock", "razorfang"):
-                    if norm(D.ability) != "shielddust":
-                        D.vol.add("flinch")
-                elif thrown == "whiteherb":
-                    for k_ in list(D.boosts):
-                        if D.boosts[k_] < 0:
-                            D.boosts[k_] = 0
+            if key == "fling":
+                self._fling_throw(st, i, o, A, D, rng, hit_sub)
             deferred = (eff_mv, dmg, hp_before) if nhits == 1 else None
             self._on_hit(st, i, o, eff_mv, rng, dmg, hp_before, crit, defer=nhits == 1)
             if key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.ability) != "stickyhold" and not (
@@ -1910,6 +1894,33 @@ class Engine:
         if A.item and norm(A.item).endswith("gem") and mv["category"] != "status" and mv["type"] == A.item[:-4].strip():
             return {"gem"}
         return set()
+
+    def _fling_throw(self, st, i, o, A, D, rng, hit_sub):
+        """던지기: 도구를 상대에게 던져 효과를 준다"""
+        if A.item:                       # 던지기: 도구를 상대에게 던져 효과를 주고 도구는 사라진다 (상대가 쓰러지거나 대타여도 도구는 잃는다)
+            thrown = norm(A.item)
+            A.item = ""
+            if not D.alive or hit_sub:
+                pass
+            elif thrown.endswith("berry"):
+                own_, last_ = D.item, D.last_item
+                D.item = thrown
+                for hook_ in ("on_damage_taken_hp", "on_status"):
+                    for src_, r_ in self.rows(D, hook_):
+                        if src_ == "item" and D.item == thrown:
+                            self.apply_row(st, "item:" + r_["label"].split(":", 1)[1], r_, o, D, rng)
+                D.ate_berry = True
+                D.last_item = last_                           # 던져 맞은 열매는 eatItem 이 아니라서 마지막 도구로 기록되지 않는다
+                D.item = own_
+            elif thrown in ("flameorb", "toxicorb", "lightball", "poisonbarb"):
+                self.try_status(st, o, D, {"flameorb": "brn", "toxicorb": "tox", "lightball": "par", "poisonbarb": "psn"}[thrown], rng, src_side=i)
+            elif thrown in ("kingsrock", "razorfang"):
+                if norm(D.ability) != "shielddust":
+                    D.vol.add("flinch")
+            elif thrown == "whiteherb":
+                for k_ in list(D.boosts):
+                    if D.boosts[k_] < 0:
+                        D.boosts[k_] = 0
 
     def _on_hit(self, st, i, o, mv, rng, dmg, hp_before, crit, defer=False):
         """피격 후 처리: 방어자의 on_hit_taken / on_damage_taken_hp / (급소) on_crit_taken.
@@ -2345,6 +2356,12 @@ class Engine:
                 return
         if key == "noretreat" and "noretreat" in A.vol:
             self._sfail = True
+            return
+        if key == "fairylock":                 # 요정의자물쇠: 다음 턴에 모두 교체할 수 없다
+            if not st.fairy_lock:
+                st.fairy_lock = 2
+            else:
+                self._sfail = True
             return
         if key == "gravity":                 # 중력: 5턴 (다시 쓰면 실패). 하늘에 떠 있는 상태를 모두 끝낸다
             if st.gravity:
@@ -2826,6 +2843,8 @@ class Engine:
                 self._magic_end(st)
         if st.wonder_room:
             st.wonder_room -= 1
+        if st.fairy_lock:
+            st.fairy_lock -= 1
         if st.gravity:
             st.gravity -= 1
             if not st.gravity:
