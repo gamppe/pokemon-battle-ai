@@ -57,6 +57,8 @@ class Mon:
     weight_hg: int = 0
     gender: str = "N"
     stats: dict = field(default_factory=dict)
+    grounded_vol: bool = False   # 쓰러뜨리기/뿌리박기로 땅에 붙은 상태
+    levitating: bool = False     # 전자부유 중
     maxhp: int = 0
     hp: int = 0
     name: str = ""
@@ -88,6 +90,7 @@ def make_mon(data: GameData, spec: dict) -> Mon:
             w = w * 2 if r["value"] == 2 else tr(w * r["value"])
     m.weight_hg = max(1, w)
     m.gender = spec.get("gender", "N")
+    m.grounded_vol, m.levitating = bool(spec.get("grounded_vol")), bool(spec.get("levitating"))
     m.maxhp = m.base["hp"] + sp["hp"] + 75
     m.hp = m.maxhp if m.hp_frac is None else max(1, math.floor(m.maxhp * m.hp_frac))
     return m
@@ -99,6 +102,7 @@ class Field:
     terrain: str | None = None   # electric / grassy / misty / psychic
     screens: tuple = ()          # 방어 쪽 진영: reflect / light_screen / aurora_veil
     wonder: bool = False         # 원더룸: 방어/특방 수치 교환
+    gravity: bool = False        # 중력: 모두 땅에 붙는다
 
 
 def attacker_weather(c, F):
@@ -138,6 +142,10 @@ def has_item_flag(c: Ctx, mon: Mon, kind):
 def grounded(c: Ctx, mon: Mon):
     if mon.item and any(r["code"] == "grounded" for r in c.data.item_fx.get(norm(mon.item), [])):
         return True
+    if c.F.gravity or mon.grounded_vol:
+        return True
+    if mon.levitating:
+        return False
     ab_on = ability_active(c, mon)
     balloon = norm(mon.item) == "airballoon" and item_active(c, mon)
     if "Flying" in mon.types or (ab_on and norm(mon.ability) in ("levitate", "eelevate")) or balloon:
@@ -305,7 +313,7 @@ def type_effectiveness(c: Ctx, move_type: str, defender: Mon):
     mod, immune = 0, False
     ign = (c.move.get("extra") or {}).get("ignoreImmunity")
     ghost_ok = has_ability_code(c, c.A, "ghost_immunity") and move_type in ("Normal", "Fighting")   # 배짱: 고스트에도 적중
-    ignore_ground = any(r["code"] == "ground_immunity" for r in c.data.item_fx.get(norm(c.D.item), []))
+    ignore_ground = c.F.gravity or c.D.grounded_vol or any(r["code"] == "ground_immunity" for r in c.data.item_fx.get(norm(c.D.item), []))
     forced = {}
     for r in c.move.get("rules", []):
         if r["type"] == "effectiveness_mod" and r["params"].get("vs_type"):
@@ -323,7 +331,7 @@ def type_effectiveness(c: Ctx, move_type: str, defender: Mon):
         elif m < 1:
             mod -= 1
     # 특성/도구의 땅 기술 무효 (Levitate/Eelevate/Air Balloon)
-    if move_type == "Ground" and not grounded(c, defender) and "Flying" not in defender.types:
+    if move_type == "Ground" and not grounded(c, defender) and ("Flying" not in defender.types or defender.levitating):
         immune = True
     return mod, immune
 
@@ -524,6 +532,9 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
             elif phys > spec:
                 mv["category"] = "physical"
                 mv["flags"] = set(mv["flags"]) | {"contact"}
+    for x_ in flags:                                  # 일렉트리파이: 이 턴 기술이 전기 타입으로
+        if x_.startswith("retype:") and norm(mv["name"]) != "struggle":
+            mv["type"] = x_.split(":")[1]
     # ── 면역 ──
     mod, immune = type_effectiveness(c, mv["type"], D)
     if immune:
@@ -651,6 +662,8 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
                         and (row["cond"].get("move_category", "").split("|") and mv["category"] in row["cond"]["move_category"].split("|")):
                     fch.mul(row["value"]); c.used.append(row["label"])
         d = fch.apply(d)
+        if "target_minimized" in flags and "minimize" in mv["flags"]:      # 작아지기 상태의 상대에게 몸집 기술은 2배
+            d = modify(d, 2)
         if d == 0:
             d = 1
         rolls.append(d % 65536)
