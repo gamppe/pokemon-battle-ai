@@ -919,13 +919,13 @@ class Engine:
             S.heal_next = None
         def effects():                                      # 해저드 + 등장 효과 (Showdown 의 runSwitch)
             if not self._item_is(bm, "heavydutyboots"):
-                if S.hazards.get("stealthrock"):
+                if S.hazards.get("stealthrock") and norm(bm.ability) != "magicguard":
                     eff = 1.0
                     for t in bm.types:
                         eff *= self.data.type_chart.get(("Rock", t), 1.0)
                     self.hp_change(st, side, bm, -math.floor(bm.maxhp * eff / 8), "스텔스록")
                 if self._grounded(bm) and bm.alive:
-                    if S.hazards.get("spikes"):
+                    if S.hazards.get("spikes") and norm(bm.ability) != "magicguard":
                         self.hp_change(st, side, bm, -math.floor(bm.maxhp / {1: 8, 2: 6, 3: 4}[S.hazards["spikes"]]), "압정")
                     if S.hazards.get("toxicspikes"):
                         if "Poison" in bm.types:
@@ -1861,6 +1861,8 @@ class Engine:
                 A.item = own
             if key == "fling":
                 self._fling_throw(st, i, o, A, D, rng, hit_sub)
+            if nhits > 1 and h < nhits:
+                self._hp_berry_update(st, rng)                       # 다단 기술은 타 사이마다 Update 가 돌아 HP 열매를 먹는다
             if A.item and "embargo" not in A.vol and norm(A.ability) != "klutz" and D.alive and not hit_sub and norm(A.item) in ("kingsrock", "razorfang"):
                 if rng.random() < 0.1 and not D.moved and norm(D.ability) not in ("innerfocus", "shielddust") and norm(A.ability) != "sheerforce":
                     D.vol.add("flinch")                           # 왕의징표석/날카로운이빨: 타격마다 10% 풀죽음 (다단 기술은 타마다)
@@ -1925,7 +1927,7 @@ class Engine:
                 self.hp_change(st, i, A, -math.floor(A.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
             elif r["params"].get("effect") == "clear_terrain" and landed and st.terrain:       # 스틸롤러/아이스스피너: 맞히면 필드를 없앤다 (대타 포함)
                 st.terrain, st.terrain_turns = None, 0
-            elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard" and A.alive:      # 대타를 때려도 깐다 (onAfterSubDamage)
+            elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard" and A.alive and norm(A.ability) != "sheerforce":      # 대타를 때려도 깐다 (onAfterSubDamage)
                 self._side_condition(st, o, {"stealth_rock": "stealthrock"}.get(r["params"]["hazard"], r["params"]["hazard"]), swap=True)
         if mv["force_switch"] and not mv["self_switch"] and D.alive and not hit_sub and D.sub == 0 and norm(D.ability) != "suctioncups" and "ingrain" not in D.vol:
             cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]        # 드래곤테일 등: 끌어내기가 레드카드/탈출버튼보다 먼저
