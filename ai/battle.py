@@ -287,6 +287,7 @@ class Engine:
             return
         S.mega_used = True
         bm.sid = mega
+        bm.stat_over = {}                                          # 폼이 바뀌면 능력치가 다시 계산된다 (파워스플릿 등 효과가 사라짐)
         bm.types = list(self.data.pokemon[mega]["types"])
         bm.ability = self.base_ability(mega)
         bm.abil_orig = None
@@ -1356,8 +1357,12 @@ class Engine:
         # 스탠스체인지: 기술을 실제로 쓰게 된 뒤에 바뀐다 (풀죽음/수면 등으로 움직이지 못하면 폼 그대로). 공격하면 블레이드폼, 킹실드는 실드폼
         if norm(bm.ability) == "stancechange" and bm.sid in ("aegislash", "aegislashblade") and not bm.orig:
             if norm(mv["name"]) == "kingsshield":
+                if bm.sid != "aegislash":
+                    bm.stat_over = {}
                 bm.sid = "aegislash"
             elif mv["category"] != "status":
+                if bm.sid != "aegislashblade":
+                    bm.stat_over = {}
                 bm.sid = "aegislashblade"
         if norm(bm.item) in CHOICE and norm(mname) != "struggle":      # 발버둥은 고정 기술을 바꾸지 않는다 (쓸 수 없는 기술에 고정되면 계속 발버둥)
             bm.locked = mname
@@ -1783,6 +1788,7 @@ class Engine:
                 continue
             if not D.busted and norm(D.ability) == "disguise" and D.sid == "mimikyu" and norm(A.ability) not in MOLD_BREAKERS:      # 탈 (첫 피격 무효, 최대 HP의 1/8 손해)
                 D.busted = True
+                D.stat_over = {}                                  # 폼 체인지로 능력치가 다시 계산된다
                 D.types = list(self.data.pokemon[D.sid]["types"])      # 폼 체인지(Mimikyu-Busted)로 타입이 원래대로 돌아간다
                 self.hp_change(st, o, D, -max(1, D.maxhp // 8), "탈")
                 self._say(st, "  탈 벗겨짐")
