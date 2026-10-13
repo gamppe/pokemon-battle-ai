@@ -1387,10 +1387,11 @@ class Engine:
                 st.lastmove_any = norm(mname)
                 return
         self._zero_hit = False
+        foe_up_ = st.sides[1 - i].mon.alive
         self._run_move(st, i, mv, mname, acts, rng, switch_policy)
         if norm(mv["name"]) == "spitup" and bm.stockpile:
             self._unstock(st, i, bm)                          # 분출 뒤 비축 해제
-        if norm(mv["name"]) in ("steelbeam", "mindblown", "chloroblast") and bm.alive and norm(bm.ability) != "magicguard" and not self._zero_hit:
+        if norm(mv["name"]) in ("steelbeam", "mindblown", "chloroblast") and bm.alive and norm(bm.ability) != "magicguard" and not self._zero_hit and foe_up_:       # 대상이 없으면(이미 쓰러짐) 실패 처리가 아니라 반동도 없다
             self.hp_change(st, i, bm, -math.floor(bm.maxhp / 2 + 0.5), mv["name"])      # 빗나가거나 막혀도 최대 HP 절반을 잃는다 (mindBlownRecoil)
         if mv["type"] == "Electric" and bm.charged:                 # 전기 기술을 쓰고 나면 충전 해제 (onAfterMove)
             bm.charged = 0
@@ -1839,7 +1840,7 @@ class Engine:
                     D.vol.add("flinch")                           # 왕의징표석/날카로운이빨: 타격마다 10% 풀죽음 (다단 기술은 타마다)
             deferred = (eff_mv, dmg, hp_before) if nhits == 1 else None
             self._on_hit(st, i, o, eff_mv, rng, dmg, hp_before, crit, defer=nhits == 1)
-            if key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.ability) != "stickyhold" and not (
+            if key in ("thief", "covet") and A.alive and not A.item and D.item and (norm(D.ability) != "stickyhold" or not D.alive) and not (
                     self._own_stone(D)):
                 A.item, D.item = D.item, ""                       # 도둑질/탐내기: 접촉 반격(울퉁불퉁멧 등) 뒤, 열매 소비보다 먼저 도구를 빼앗는다
         if not landed:
@@ -1871,7 +1872,7 @@ class Engine:
             if k_ is not None and k_ < len(D.pp):
                 D.pp[k_] = max(0, D.pp[k_] - 3)
         if not hit_sub:
-            if key == "knockoff" and D.item and norm(D.ability) != "stickyhold" and not (
+            if key == "knockoff" and D.item and (norm(D.ability) != "stickyhold" or not D.alive) and not (
                     self._own_stone(D)):
                 D.item = ""
         if D.alive:
@@ -1914,7 +1915,8 @@ class Engine:
         if A.alive and landed and st.sides[i].mon is A:           # 생명의구슬/조개껍질방울은 낙오카드 등이 끝난 뒤
             self._no_flinch_item = True
             try:
-                self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="item")
+                if not (norm(A.ability) == "sheerforce" and mv["has_secondary"] and norm(A.item) == "lifeorb"):     # 힘센손: 부가효과가 사라진 기술은 생명의구슬 반동이 없다
+                    self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="item")
             finally:
                 self._no_flinch_item = False
         if landed and not hit_sub and A.alive and D.alive and st.sides[i].mon is A and st.sides[o].mon is D:
@@ -2016,6 +2018,8 @@ class Engine:
     def _on_faint(self, st, i, o, mv, rng, dmg):
         A, D = st.sides[i].mon, st.sides[o].mon
         self.run_hook(st, o, D, "on_faint", rng, mv=mv, dmg=dmg, foe_side=i)
+        if A.alive and norm(mv["name"]) == "fellstinger":
+            self.change_boost(st, i, A, "atk", 3)                       # 독침(Fell Stinger): 쓰러뜨리면 공격 +3
         if A.alive:
             self.run_hook(st, i, A, "on_ko", rng, mv=mv, dmg=dmg, foe_side=o)
 
@@ -2619,7 +2623,7 @@ class Engine:
                 self._sfail = True
             return
         if key == "encore":
-            if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.encore and D.last_move and D.last_move not in ("encore",) and \
+            if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.encore and D.last_move and D.last_move not in ("encore", "struggle") and \
                     not self._pp_empty(D, D.last_move) and "failencore" not in self.data.moves[D.last_move]["flags"]:        # PP 가 0 인 기술(되살리기)에는 실패
                 D.encore = 4 if D.moved else 3                    # 이번 턴에 이미 움직인 상대는 1턴 더 (Showdown: willMove 가 아니면 duration++)
                 D.encore_move = D.last_move
