@@ -406,6 +406,9 @@ def base_power(c: Ctx):
             elif f in ("times_attacked", "fainted_allies"):     # 분노의주먹/추도: 엔진이 flags 로 횟수를 알려줌
                 n = next((int(x.split(":")[1]) for x in c.flags if x.startswith(f + ":")), 0)
                 bp = min(p.get("cap", 10 ** 9), p["base"] + p["per"] * n)
+            elif f == "party_atk":               # 따귀때리기: 파티원 한 마리의 기본 공격력
+                n = next((int(x.split(":")[1]) for x in c.flags if x.startswith("beatup:")), c.A.base["atk"])
+                bp = p["base"] + n // p["div"]
             elif f == "hit_index":               # 트리플악셀: 타수마다 위력 증가
                 bp = p["per"] * c.hit
             elif f == "item_fling_power":        # 내던지기: 지닌 도구에 따라 위력
@@ -595,6 +598,8 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
     base = tr(tr(tr(tr(2 * LEVEL / 5 + 2) * bp * atk) / dfn) / 50)
     # ── modifyDamage ──
     base += 2
+    if "pb2" in flags:                               # 부자유친 두 번째 타: modifyDamage 에서 baseDamage x0.25 (날씨·급소·난수 이전)
+        base = modify(base, 0.25)
     wthr = attacker_weather(c, F)
     if wthr in ("rain", "sun"):
         wch = Chain()

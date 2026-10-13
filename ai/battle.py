@@ -77,7 +77,11 @@ class BMon:
     locked: str | None = None
     unnerved: bool = False                    # 긴장감 때문에 열매를 먹지 못한 상태 (긴장감이 사라지면 다시 판정)
     faint_logged: bool = False                # 쓰러짐 순서를 이미 기록했는지 (자폭 기술은 사용 시점에 먼저 기록)
-    last_item: str = ""                       # 마지막으로 먹은 열매 (수확 특성용)
+    last_item: str = ""                       # 마지막으로 쓴(먹은) 도구 (수확/주워담기 특성용)
+    used_turn: int = -1                       # 도구를 마지막으로 쓴 턴 (주워담기)
+    cud_berry: str = ""                       # 되새김질: 다시 먹을 열매와 남은 카운트
+    cud_n: int = 0
+    opp: dict = field(default_factory=dict)   # 편승(Opportunist)이 모아 둔 상대의 능력 상승
     abil_orig: str | None = None            # 트레이스/특성교환으로 바뀌기 전의 특성 (교체하면 복원)
     recharge: bool = False
     moved: bool = False
@@ -265,6 +269,7 @@ class Engine:
         self._say(st, f"[{i}] {bm.name} 메가진화 -> {mega}")
         self._run_switch_in(st, i, bm, rng, only="ability")       # 새 특성의 등장 효과 (가뭄, 위협 등)
         self._forecast_sync(st)
+        self._opportunist_flush(st)
 
     def _own_stone(self, bm):
         """자기 종의 메가스톤을 들고 있으면 뺏기거나 바꿔칠 수 없다 (메가진화 전 모습 포함)"""
@@ -317,7 +322,7 @@ class Engine:
         scr = tuple(k for k in SCREENS if st.sides[defender_side].screens.get(k, 0) > 0)
         return Field(self.wx(st), st.terrain, scr)
 
-    def rolls(self, st, ai_, di_, move_key, crit, hit=1):
+    def rolls(self, st, ai_, di_, move_key, crit, hit=1, pb=False, extra=None):
         A, D = st.sides[ai_].mon, st.sides[di_].mon
         mv = self.data.moves[move_key]
         dep = any(r["type"] in ("power_formula", "power_mult_if", "damage_formula") for r in mv["rules"])
@@ -353,6 +358,10 @@ class Engine:
         if "flashfire" in A.vol:
             fl.add("flash_fire_active")
         fl.add(f"times_attacked:{A.times_attacked}")
+        if pb:
+            fl.add("pb2")
+        if extra:
+            fl.add(extra)
         fl.add(f"fainted_allies:{sum(1 for m in st.sides[ai_].team if not m.alive)}")
         fl = frozenset(fl)
         key = (fl, repr(sorted((k, repr(v)) for k, v in sa.items())), repr(sorted((k, repr(v)) for k, v in sd.items())),
@@ -456,10 +465,39 @@ class Engine:
         return True
 
     def _consume(self, st, bm):
-        if norm(bm.item).endswith("berry"):
+        self._use_item(st, bm)
+
+    def _use_item(self, st, bm):
+        """도구를 써서 없앤다 (Showdown useItem/eatItem): 마지막 도구/사용 턴 기록, 열매면 되새김질 예약"""
+        it = bm.item
+        bm.last_item, bm.used_turn = it, st.turn
+        if norm(it).endswith("berry"):
             bm.ate_berry = True
-            bm.last_item = bm.item
+            if norm(bm.ability) == "cudchew" and not getattr(self, "_no_cud", False):
+                bm.cud_berry, bm.cud_n = it, 1 if getattr(self, "_eot", False) else 2
         bm.item = ""
+
+    def _eat_again(self, st, side, bm, berry, rng):
+        """되새김질: 먹은 열매의 효과가 조건 없이 다시 나온다"""
+        n = norm(berry)
+        if n == "leppaberry":
+            slot = next((j for j, p in enumerate(bm.pp) if p <= 0), None)
+            if slot is None:
+                slot = next((j for j, p in enumerate(bm.pp) if p < bm.maxpp[j]), None)
+            if slot is not None:
+                bm.pp[slot] = min(bm.pp[slot] + 10, bm.maxpp[slot])
+        else:
+            for r in self.data.item_fx.get(n, []):
+                if r["hook"] == "on_damage_taken_hp":
+                    self.apply_row(st, "item:" + r["label"].split(":", 1)[1], r, side, bm, rng)
+                elif r["hook"] == "on_status" and r["kind"] == "cure_status":
+                    codes = (r["code"] or "").split("|")
+                    if bm.status and ("any" in codes or bm.status in codes or (bm.status == "tox" and "psn" in codes)):
+                        bm.status = None
+                    elif "confusion" in codes and "confusion" in bm.vol:
+                        bm.vol.discard("confusion")
+        bm.ate_berry = True
+        bm.last_item, bm.used_turn = berry, st.turn
 
     @staticmethod
     def _is_consumable(name):
@@ -532,7 +570,7 @@ class Engine:
                 def red(holder=bm):
                     cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
                     if cand and holder.alive and st.sides[side].mon is holder and st.sides[o].mon.alive and holder.item:   # 보유자가 이미 끌려 나갔으면 발동하지 않음
-                        holder.item = ""
+                        self._use_item(st, holder)
                         self._switch_in(st, o, self._rng, to=self._rng.choice(cand))
                 self._pending.append(red)
                 applied = False
@@ -540,7 +578,7 @@ class Engine:
                 def eject(holder=bm):
                     cand = [j for j in st.sides[side].alive_idx() if j != st.sides[side].active]
                     if cand and holder.alive and st.sides[side].mon is holder and holder.item:
-                        holder.item = ""
+                        self._use_item(st, holder)
                         j = self._policy(st, side) if self._policy else cand[0]
                         self._switch_in(st, side, self._rng, to=j if j in cand else cand[0])
                 self._pending.append(eject)
@@ -609,6 +647,12 @@ class Engine:
         bm.boosts[stat] = new
         if n > 0 and new != old:
             bm.raised_turn = st.turn
+            if not getattr(self, "_in_opp", False):                 # 편승: 상대의 능력 상승을 모아 두었다가 따라 올린다
+                for k_ in (0, 1):
+                    if st.sides[k_].mon is bm:
+                        fo_ = st.sides[1 - k_].mon
+                        if fo_.alive and norm(fo_.ability) == "opportunist":
+                            fo_.opp[stat] = fo_.opp.get(stat, 0) + (new - old)
         if n < 0 and new != old:
             bm.lowered_turn = st.turn
             for src, r in self.rows(bm, "on_stat_drop"):
@@ -620,7 +664,7 @@ class Engine:
                             for k in list(bm.boosts):
                                 if bm.boosts[k] < 0:
                                     bm.boosts[k] = 0
-                            bm.item = ""
+                            self._use_item(st, bm)
                     self._pending.append(herb)
         return new - old
 
@@ -688,11 +732,21 @@ class Engine:
                 codes = (r["code"] or "").split("|")
                 if "confusion" in codes:
                     bm.vol.discard("confusion")
-                    if norm(bm.item).endswith("berry"):
-                        bm.ate_berry = True
-                        bm.last_item = bm.item
-                    bm.item = ""
+                    self._use_item(st, bm)
                     break
+
+    def _opportunist_flush(self, st):
+        for k in (0, 1):
+            m = st.sides[k].mon
+            if m.opp:
+                opp, m.opp = m.opp, {}
+                if m.alive and norm(m.ability) == "opportunist":
+                    self._in_opp = True
+                    try:
+                        for s_, n_ in opp.items():
+                            self.change_boost(st, k, m, s_, n_)
+                    finally:
+                        self._in_opp = False
 
     def _hp_berry_update(self, st, rng):
         """행동/턴 종료 뒤의 Update: 반동·화상·독 등 간접 피해로 HP 조건이 된 열매는 바로 먹는다"""
@@ -758,6 +812,7 @@ class Engine:
                 old.ability, old.abil_orig = old.abil_orig, None
             old.charged = 0
             old.ate_berry = False
+            old.opp, old.cud_berry, old.cud_n = {}, "", 0
             old.sub, old.charge, old.semi, old.trap = 0, None, None, 0
             if old.orig:
                 old.spec, old.sid, old.types, old.ability = old.orig
@@ -815,6 +870,7 @@ class Engine:
             self._run_switch_in(st, side, bm, rng)
             self._forecast_sync(st)
             self._update_berries(st, rng)                        # 긴장감 보유자가 나가면 막혀 있던 열매를 바로 먹는다
+            self._opportunist_flush(st)
         if defer:                                           # 동시에 교체되면 등장 효과는 모두 나온 뒤 현재 속도 순으로 처리된다
             return effects
         effects()
@@ -826,6 +882,10 @@ class Engine:
 
     def _run_switch_in(self, st, side, bm, rng, only=None):
         foe = st.sides[1 - side].mon
+        if norm(bm.ability) == "screencleaner" and only in (None, "ability"):      # 스크린클리너: 양쪽의 리플렉터/빛의장막/오로라베일 제거
+            for S_ in st.sides:
+                for k_ in ("reflect", "lightscreen", "auroraveil"):
+                    S_.screens.pop(k_, None)
         for src, r in self.rows(bm, "switch_in"):
             if only and src != only:
                 continue
@@ -853,7 +913,7 @@ class Engine:
             for k in list(bm.boosts):
                 if bm.boosts[k] < 0:
                     bm.boosts[k] = 0
-            bm.item = ""
+            self._use_item(st, bm)
         if bm.alive and bm.item:                                  # 등장하자마자 HP 조건을 만족하면 열매를 먹는다 (시트러스 등, Update 이벤트)
             self.run_hook(st, side, bm, "on_damage_taken_hp", rng, only="item")
 
@@ -996,6 +1056,10 @@ class Engine:
                 pr_ = self._priority(st, i, mv) if mv else 0
                 if mv and norm(bm.item) == "quickclaw" and pr_ <= 0 and rng.random() < 0.2:      # 선제공격손톱: 20% 확률로 같은 우선도 안에서 먼저 움직인다
                     pr_ += 0.1
+                elif mv and norm(bm.ability) == "quickdraw" and mv["category"] != "status" and rng.random() < 0.3:      # 퀵드로우: 공격기가 30% 확률로 먼저
+                    pr_ += 0.1
+                elif norm(bm.ability) == "stall" or norm(bm.item) in ("laggingtail", "fullincense"):      # 늦뱃: 같은 우선도 안에서 가장 늦게
+                    pr_ -= 0.1
                 movers.append((i, pr_, self.speed_of(st, i), rng.random()))
         movers.sort(key=lambda x: (-x[1], (x[2] if st.trick_room else -x[2]), x[3]))
         starts = [st.sides[0].active, st.sides[1].active]
@@ -1014,10 +1078,12 @@ class Engine:
             for fn in pend:
                 fn()
             self._check_winner(st)
+            self._opportunist_flush(st)
             self._emergency_exit(st, mons0, hp0, rng, switch_policy)
         if st.winner is None:
             hp0 = [st.sides[0].mon.hp, st.sides[1].mon.hp]
             mons0 = [st.sides[0].mon, st.sides[1].mon]
+            self._eot = True
             self._end_of_turn(st, rng)
             self._check_winner(st)
             self._emergency_exit(st, mons0, hp0, rng, switch_policy)
@@ -1044,6 +1110,7 @@ class Engine:
         self._hp_berry_update(st, rng)
         self._leppa_update(st, rng)
         self._forecast_sync(st)
+        self._eot = False
         return st
 
     def _emergency_exit(self, st, mons0, hp0, rng, switch_policy):
@@ -1106,7 +1173,7 @@ class Engine:
 
     def _can_act(self, st, i, bm, rng, mv=None):
         if bm.status == "slp":
-            bm.sleep -= 1
+            bm.sleep -= 2 if norm(bm.ability) == "earlybird" else 1
             if bm.sleep <= 0:
                 bm.status = None
                 self._say(st, f"  {bm.name} 일어남")
@@ -1470,6 +1537,14 @@ class Engine:
             rng.choices([2, 3, 4, 5], [35, 35, 15, 15])[0] if (mv["min_hits"], mv["max_hits"]) == (2, 5) else rng.randint(mv["min_hits"], mv["max_hits"]))
         if norm(A.ability) == "skilllink" and mv["max_hits"] == 5:
             nhits = 5
+        beat = None
+        if key == "beatup":                                         # 따귀때리기: 쓰러지지 않고 상태이상이 없는 파티원(자신 포함)마다 한 번씩, 위력 = 5 + 그 포켓몬의 기본 공격력/10
+            beat = [A] + [m_ for m_ in st.sides[i].team if m_ is not A and m_.alive and not m_.status]
+            nhits = len(beat)
+        pb = False
+        if norm(A.ability) == "parentalbond" and mv["max_hits"] == 1 and not hit_rule and not ({"noparentalbond", "charge", "futuremove"} & set(mv["flags"])) \
+                and not (mv["self_destruct"] or mv["ohko"]):          # 부자유친: 한 번 맞히는 공격기는 두 번 공격 (두 번째는 위력 1/4)
+            nhits, pb = 2, True
         total, landed = 0, 0
         self._raised_pre = D.raised_turn == st.turn        # 부가효과 판정은 이 기술의 피격 반응(스태미나 등) 이전의 능력 상승만 본다
         eff_mv = mv
@@ -1518,7 +1593,8 @@ class Engine:
                 dmg, crit = D.hp - A.hp, False
             else:
                 crit = self._crit(mv, A, D, rng)
-                r = self.rolls(st, i, o, key, crit, hit=h)
+                r = self.rolls(st, i, o, key, crit, hit=h, pb=pb and h == 2,
+                               extra=f"beatup:{self.data.pokemon[beat[h - 1].sid]['base']['atk']}" if beat else None)
                 if r["rolls"] is None:
                     if r["reason"] in ("immune", "fail"):
                         for rr in mv["rules"]:
@@ -1603,7 +1679,7 @@ class Engine:
                         if src_ == "item" and A.item == berry:
                             self.apply_row(st, "item:" + r_["label"].split(":", 1)[1], r_, i, A, rng)
                 A.ate_berry = True
-                A.last_item = berry
+                A.last_item, A.used_turn = berry, st.turn
                 A.item = own
             if key == "fling" and A.item:                       # 던지기: 도구를 상대에게 던져 효과를 주고 도구는 사라진다 (상대가 쓰러지거나 대타여도 도구는 잃는다)
                 thrown = norm(A.item)
@@ -1688,6 +1764,11 @@ class Engine:
             fn()
         if key == "struggle" and A.alive:
             self.hp_change(st, i, A, -max(1, math.floor(A.maxhp / 4 + 0.5)), "발버둥")        # Showdown: Math.round(maxhp / 4)
+        if landed and not hit_sub and A.alive and D.alive and st.sides[i].mon is A and st.sides[o].mon is D:
+            if norm(D.ability) == "pickpocket" and "contact" in mv["flags"] and not D.item and A.item and norm(A.ability) != "stickyhold"                     and not self._own_stone(A):                           # pickpocket: 접촉당한 뒤 빈손이면 공격자의 도구를 훔친다
+                D.item, A.item = A.item, ""
+            if norm(A.ability) == "magician" and not A.item and D.item and key != "fling" and norm(D.ability) != "stickyhold"                     and not self._own_stone(D):                           # magician: 기술을 맞힌 상대의 도구를 빼앗는다
+                A.item, D.item = D.item, ""
         if A.alive and landed and st.sides[i].mon is A:
             self.run_hook(st, i, A, "on_damage_taken_hp", rng)
         if A.alive and landed and st.sides[i].mon is A:           # 생명의구슬/조개껍질방울은 낙오카드 등이 끝난 뒤
@@ -1860,7 +1941,7 @@ class Engine:
         if D.hp == D.maxhp and dmg >= D.hp and (norm(D.item) == "focussash" or norm(D.ability) == "sturdy"):
             dmg = D.hp - 1
             if norm(D.item) == "focussash" and norm(D.ability) != "sturdy":
-                D.item = ""
+                self._use_item(st, D)
         dmg = min(dmg, D.hp)
         self._say(st, f"  미래공격 {D.name} -{dmg}")
         self.hp_change(st, tgt_side, D, -dmg, mv["name"])
@@ -1882,7 +1963,7 @@ class Engine:
             bm.taunt = bm.encore = bm.healblock = bm.disable_n = 0
             bm.encore_move = ""
             bm.disabled = ""
-            bm.item = ""
+            self._use_item(st, bm)
 
     def _self_destruct_fail(self, st, i, mv):
         """자폭 기술(Explosion 등)은 막히거나 빗나가거나 면역이어도 쓰는 순간 쓰러진다 (Showdown selfdestruct: 'always')"""
@@ -2200,6 +2281,8 @@ class Engine:
             elif kind in ("status", "stat_stage", "volatile"):
                 if kind == "volatile" and e["code"] in PROTECT_MOVES:
                     continue
+                if mv["target"] == "allies":                  # 하울링/생명의물방울: 싱글에서는 사용자 자신에게 걸린다
+                    e = dict(e, applies_to="self")
                 if e["applies_to"] == "self" and kind == "stat_stage":
                     self.change_boost(st, i, A, e["code"], e["stages"] or 0)
                 elif e["applies_to"] == "self" and kind == "volatile":
@@ -2393,11 +2476,33 @@ class Engine:
                 bm.perish -= 1
                 if bm.perish == 0:
                     self.hp_change(st, i, bm, -bm.hp, "멸망의노래")
-            if bm.alive and norm(bm.ability) == "harvest" and not bm.item and bm.last_item:      # 수확: 먹은 열매가 (맑음이면 확실히, 아니면 50%) 되살아난다
+            if bm.alive and norm(bm.ability) == "harvest" and not bm.item and norm(bm.last_item).endswith("berry"):      # 수확: 먹은 열매가 (맑음이면 확실히, 아니면 50%) 되살아난다
                 if self.wx(st) == "sun" or rng.random() < 0.5:
                     bm.item, bm.last_item = bm.last_item, ""
                     self.run_hook(st, i, bm, "on_damage_taken_hp", rng, only="item")           # 되살아난 열매는 조건이 맞으면 바로 먹는다
+            ab_ = norm(bm.ability)
+            if bm.alive and ab_ == "cudchew" and bm.cud_berry:                               # 되새김질: 먹은 지 두 번째 턴 끝에 다시 먹는다
+                bm.cud_n -= 1
+                if bm.cud_n <= 0:
+                    berry, bm.cud_berry = bm.cud_berry, ""
+                    self._eat_again(st, i, bm, berry, rng)
+            if bm.alive and ab_ == "pickup" and not bm.item:                                  # 주워담기: 이번 턴에 도구를 쓴 상대의 마지막 도구를 줍는다
+                foe_ = st.sides[1 - i].mon
+                if foe_.alive and foe_.last_item and foe_.used_turn == st.turn:
+                    bm.item, foe_.last_item = foe_.last_item, ""
+                    self.run_hook(st, i, bm, "on_damage_taken_hp", rng, only="item")
+            if bm.alive and ab_ == "moody":                                                   # 변덕쟁이: 무작위 능력 +2, 다른 능력 -1 (명중/회피 제외)
+                stats_ = ["atk", "def", "spa", "spd", "spe"]
+                up_ = [s_ for s_ in stats_ if bm.boosts.get(s_, 0) < 6]
+                plus_ = rng.choice(up_) if up_ else None
+                down_ = [s_ for s_ in stats_ if bm.boosts.get(s_, 0) > -6 and s_ != plus_]
+                minus_ = rng.choice(down_) if down_ else None
+                if plus_:
+                    self.change_boost(st, i, bm, plus_, 2)
+                if minus_:
+                    self.change_boost(st, i, bm, minus_, -1)
 
+        self._opportunist_flush(st)
         for i in (0, 1):
             st.sides[i].mon.vol.discard("roost")
         for i in (0, 1):
