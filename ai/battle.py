@@ -673,6 +673,7 @@ class Engine:
         bm.met_last = bm.disabled = ""
         bm.db_pending = False
         bm.last_move = ""
+        bm.prev_failed = bm.last_failed = False                  # 교체하면 직전 기술 실패 기록이 사라진다 (Temper Flare 등의 배율 조건)
         if passed:
             bm.boosts, bm.sub, bm.vol = passed[0], passed[1], set(passed[2])
             for k_, v_ in passed[3].items():
