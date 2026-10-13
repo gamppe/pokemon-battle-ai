@@ -289,7 +289,8 @@ class Engine:
         if before and not bm.hp:
             if not bm.faint_logged:
                 st.last_faint_side = side
-            bm.faint_logged = True                          # (Showdown 은 쓰러져도 상태이상 표시를 지우지 않는다. 되살리기에서만 치료)
+            bm.faint_logged = True
+            bm.status = None
             bm.boosts = {}                                  # 쓰러지면 능력 단계도 초기화된다 (Showdown clearVolatile)
             self._say(st, f"  {bm.name} 쓰러짐 ({why})")
         return bm.hp - before
