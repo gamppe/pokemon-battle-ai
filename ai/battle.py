@@ -241,7 +241,7 @@ class Engine:
             return
         extra = 0
         o = st.sides[1 - i].mon
-        if o.alive and norm(o.ability) == "pressure" and (mv["target"] not in ("self", "adjacentAlly", "allySide", "allyTeam", "adjacentAllyOrSelf", "allies") or "mustpressure" in mv["flags"]):
+        if o.alive and norm(o.ability) == "pressure" and (mv["target"] not in ("self", "adjacentAlly", "allySide", "allyTeam", "adjacentAllyOrSelf", "allies", "foeSide") or "mustpressure" in mv["flags"]):
             extra = 1
         bm.pp[k] = max(0, bm.pp[k] - 1 - extra)
 
@@ -1326,6 +1326,12 @@ class Engine:
             bm.charge, bm.semi = None, None
             self._rampage_abort(st, bm, rng)
             return
+        foe_im = st.sides[1 - i].mon
+        if (st.gravity and "gravity" in mv["flags"]) or ("imprison" in foe_im.vol and foe_im.alive and norm(mname) != "struggle"
+                                                          and norm(mname) in {norm(m_) for m_ in foe_im.spec["moves"]}):
+            self._say(st, "  봉인/중력으로 사용 불가")           # BeforeMove 에서 막히면 PP 는 줄지 않는다
+            self._rampage_abort(st, bm, rng)
+            return
         if norm(mname) == "focuspunch" and bm.hurt_turn == st.turn:      # 행동 전에 공격을 받으면 집중이 흐트러져 기술을 쓰지 못한다 (BeforeMove 중단)
             self._say(st, "  집중이 흐트러졌다")
             bm.db_pending = False
@@ -1380,10 +1386,11 @@ class Engine:
                 self._say(st, "  충전")
                 st.lastmove_any = norm(mname)
                 return
+        self._zero_hit = False
         self._run_move(st, i, mv, mname, acts, rng, switch_policy)
         if norm(mv["name"]) == "spitup" and bm.stockpile:
             self._unstock(st, i, bm)                          # 분출 뒤 비축 해제
-        if norm(mv["name"]) in ("steelbeam", "mindblown", "chloroblast") and bm.alive and norm(bm.ability) != "magicguard":
+        if norm(mv["name"]) in ("steelbeam", "mindblown", "chloroblast") and bm.alive and norm(bm.ability) != "magicguard" and not self._zero_hit:
             self.hp_change(st, i, bm, -math.floor(bm.maxhp / 2 + 0.5), mv["name"])      # 빗나가거나 막혀도 최대 HP 절반을 잃는다 (mindBlownRecoil)
         if mv["type"] == "Electric" and bm.charged:                 # 전기 기술을 쓰고 나면 충전 해제 (onAfterMove)
             bm.charged = 0
@@ -1458,7 +1465,7 @@ class Engine:
             self._contact_punish(st, i, o, mv, rng)
             self._rampage_abort(st, bm, rng)
             for r in mv["rules"]:
-                if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and bm.alive:
+                if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and bm.alive and norm(mv["name"]) not in ("steelbeam", "mindblown", "chloroblast"):
                     self.hp_change(st, i, bm, -math.floor(bm.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
                 elif r["type"] == "fail_penalty" and r["params"].get("hp_frac") and bm.alive:
                     self.hp_change(st, i, bm, -math.floor(bm.maxhp * r["params"]["hp_frac"]), "크래시")
@@ -1480,7 +1487,7 @@ class Engine:
             if mv["name"].lower() in ("jump kick", "high jump kick"):
                 self.hp_change(st, i, bm, -bm.maxhp // 2, "크래시")
             for r in mv["rules"]:
-                if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and bm.alive:
+                if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and bm.alive and norm(mv["name"]) not in ("steelbeam", "mindblown", "chloroblast"):
                     self.hp_change(st, i, bm, -math.floor(bm.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
             return
         if norm(mv["name"]) == "spitup" and not bm.stockpile:
@@ -1679,6 +1686,7 @@ class Engine:
                 and not (mv["self_destruct"] or mv["ohko"]):          # 부자유친: 한 번 맞히는 공격기는 두 번 공격 (두 번째는 위력 1/4)
             nhits, pb = 2, True
         total, landed = 0, 0
+        self._zero_hit = False                                # 변장이 막아 피해가 0 인 타격 (반동 기술은 실패가 아니라서 반동 없음)
         self._raised_pre = D.raised_turn == st.turn        # 부가효과 판정은 이 기술의 피격 반응(스태미나 등) 이전의 능력 상승만 본다
         eff_mv = mv
         berry_used = False
@@ -1771,6 +1779,9 @@ class Engine:
                 D.types = list(self.data.pokemon[D.sid]["types"])      # 폼 체인지(Mimikyu-Busted)로 타입이 원래대로 돌아간다
                 self.hp_change(st, o, D, -max(1, D.maxhp // 8), "탈")
                 self._say(st, "  탈 벗겨짐")
+                self._zero_hit = True
+                if key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.ability) != "stickyhold" and not self._own_stone(D):
+                    A.item, D.item = D.item, ""                    # 변장이 막아도 도둑질은 도구를 빼앗는다
                 if key == "fling" and A.item:
                     self._fling_throw(st, i, o, A, D, rng, False)  # 던지기는 변장이 막아도 도구를 던진다 (열매는 상대가 먹는다)
                 landed += 1
@@ -1850,6 +1861,11 @@ class Engine:
         self._secondary(st, i, o, mv, rng, hit_sub)      # 대타는 상대에게 걸리는 부가효과만 막고, 자신에게 걸리는 효과(불꽃의charge 등)는 그대로 적용
         if deferred and D.alive and st.sides[o].mon is D:                  # 열매 등 HP 조건 효과: 부가효과(힐블록 등)가 끝난 뒤에 판단
             self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=deferred[0], dmg=deferred[1], hp_before=deferred[2], foe_side=i)
+        if key == "jawlock" and A.alive and D.alive and not hit_sub:                    # 흡착턱: 서로 교체할 수 없다
+            for m_, s_, sa_ in ((D, i, st.sides[i].active), (A, o, st.sides[o].active)):
+                if "Ghost" not in self.types_of(m_) and "trapped" not in m_.vol:
+                    m_.vol.add("trapped")
+                    m_.trap2_src = (s_, sa_)
         if not hit_sub and key == "eeriespell" and D.alive and D.last_move:       # 으스스한주문: 맞은 상대가 마지막에 쓴 기술의 PP 를 3 줄인다
             k_ = self._slot_of(D, D.last_move)
             if k_ is not None and k_ < len(D.pp):
