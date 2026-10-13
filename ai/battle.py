@@ -1124,6 +1124,7 @@ class Engine:
         if st.winner is not None:
             return st
         self._grav = bool(st.gravity)
+        self._ee_skip = False
         mega_side = [i for i in (0, 1) if acts[i][0] == "M" and not self._move_locked(st.sides[i].mon)]
         acts = [("m", a[1]) if a[0] == "M" else a for a in acts]
         self._rng, self._policy, self._acts = rng, switch_policy, acts
@@ -1219,6 +1220,9 @@ class Engine:
     def _emergency_exit(self, st, mons0, hp0, rng, switch_policy):
         """비상탈출/도주경로: 행동(또는 턴 종료) 중 HP 가 절반 초과 -> 절반 이하로 떨어지면 바로 교체한다 (Showdown EmergencyExit 이벤트)"""
         if st.winner is not None:
+            return
+        if getattr(self, "_ee_skip", False):                  # 고통나누기(sethp)는 비상탈출을 일으키지 않는다
+            self._ee_skip = False
             return
         for i in (0, 1):
             m = mons0[i]
@@ -2016,6 +2020,7 @@ class Engine:
         if norm(D.ability) == "cursedbody" and A_.alive and not A_.disabled and norm(mv["name"]) != "struggle" \
                 and norm(A_.ability) not in MOLD_BREAKERS and rng.random() < 0.3:        # 저주받은바디: 맞으면 30% 로 공격한 기술을 봉인
             A_.disabled, A_.disable_n = norm(mv["name"]), 4
+            self._mental_herb(st, A_)
         dab_ = norm(D.ability)
         if dab_ in ("mummy", "lingeringaroma", "wanderingspirit") and "contact" in mv["flags"] and A_.alive:      # 접촉한 공격자의 특성을 바꾼다 (쓰러뜨려도 발동)
             flags_ = lambda x_, f_: f_ in self.abil_flags.get(norm(x_.ability), [])
@@ -2692,6 +2697,7 @@ class Engine:
                             self._status_item_cure(st, m_, m_.status)           # 받은 상태이상 치료 열매는 바로 먹는다
             return
         if key == "painsplit":
+            self._ee_skip = True
             if (D.sub == 0 or "bypasssub" in mv["flags"]):
                 avg = (A.hp + D.hp) // 2
                 A.hp, D.hp = min(A.maxhp, avg), min(D.maxhp, avg)
