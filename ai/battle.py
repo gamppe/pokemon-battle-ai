@@ -640,8 +640,8 @@ class Engine:
                     self._run_switch_in(st, side, bm, rng, only="ability")
                 applied = False
             elif code == "transform":
-                if foe.alive:
-                    self._transform(st, bm, foe)
+                if foe.alive and self._transform(st, bm, foe) and bm.ability and norm(bm.ability) != "imposter":
+                    self._run_switch_in(st, side, bm, rng, only="ability")          # 변신으로 얻은 특성의 등장 효과도 발동한다 (위협 등)
             elif code in ("aegislash_stance", "illusion", "choice_lock", "grounded", "mega_stone", "first_hit_zero_damage"):
                 applied = False
             else:
@@ -2665,8 +2665,8 @@ class Engine:
             st.wonder_room = 0 if st.wonder_room else 5
             return
         if key == "transform":
-            if D.alive and not self._transform(st, A, D):
-                pass
+            if D.alive and self._transform(st, A, D) and A.ability:
+                self._run_switch_in(st, i, A, rng, only="ability")
             return
         if key == "memento":
             if (D.sub == 0 or "bypasssub" in mv["flags"]):
