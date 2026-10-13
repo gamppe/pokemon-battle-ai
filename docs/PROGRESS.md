@@ -45,18 +45,23 @@
 - 잠꼬대 구현, 수면 중 난동부리기 잠금은 턴 종료에 해제, 난동부리기류는 막힘/빗나감/풀죽음/봉인/대상 없음일 때도 잠금 종료 시 혼란, 충전·난동 잠금 중 교체 불가.
 - 기타: 틀깨기가 방어 특성(거울갑옷/심술꾸러기/단순)을 무시, 아군 대상 기술은 싱글에서 실패, 소리 기술 면역(방음/방탄), 대타를 무시하는 능력 하락, 씨뿌리기 회복은 실제 감소량, 방어류 연속 카운터는 한 턴 쉬면 초기화, 쓰러지면 능력 단계 초기화, 트레이스/특성교환 복원, 동시 교체 시 등장 효과는 현재 속도 순.
 
-## 메가진화 처리 (현재 한계)
-- 엔진과 검증 도구는 메가진화 **행동**을 모델링하지 않는다. 메가스톤을 든 포켓몬은 팀 구성 시점부터 메가 폼(`...mega`)으로 등장하고, 메가 특성(Drought 등)은 등장할 때 발동한다.
-- 실제 대전에서는 필드에 나온 뒤 행동을 고를 때 메가진화하며(교체해서 나온 바로 그 턴에는 불가, 다음 턴부터), 진화는 그 턴 기술들보다 먼저 일어난다. 이 순서와 그 턴의 속도/우선도 재계산은 아직 구현·검증하지 않았다.
+## 메가진화 / PP (구현 완료)
+- 모든 배틀은 메가진화 전 모습으로 시작한다 (메가 종 + 맞는 메가스톤이면 원래 종 + 기본 특성으로 되돌려 시작: `demega_spec`). 메가스톤을 든 포켓몬은 원하는 턴에 `("M", 기술번호)` 행동으로 메가진화하고, 순서는 교체 → 메가진화 → 기술이다. 플레이어당 한 번만 가능(`Side.mega_used`). 충전/난동/반동 등 기술이 강제된 턴에는 메가진화를 고를 수 없다 (Showdown lockedmove).
+- 검증 하네스(`verify/sd_turns.js`)도 같은 규칙으로 시작하고 `move N mega` 로 진화시킨다.
+- PP 모델: 챔피언스 PP = `(min(pp,20)/5+1)*4` (되살리기·스케치·발버둥 제외), 압박 특성은 상대를 향한 기술(과 `mustpressure` 기술)의 PP 를 1 더 깎는다, 변신하면 PP 5, 레프파열매는 PP 가 0 이 되면 10 회복. PP 가 0 인 기술은 고를 수 없다. 검증 요약에 PP 가 포함된다.
+
+## 전수 대조 도구 (`verify/coverage.py`) 와 이번에 구현한 미구현 효과
+- `python verify/coverage.py <ability|item|move> [항목당 시나리오] [runs] [turns] [seed] [이름 일부]` : 챔피언스에서 쓸 수 있는 **모든 특성/도구/기술**을 하나씩 선두에 세워 메타 무작위 상대와 Showdown 분포를 대조한다. 불일치는 `verify/out/coverage_<종류>.json` 에 남고, `judge.py` 로 400회 재판정한다. (특성 203개, 도구 85개, 기술 510개를 4~10 시나리오씩 돌림.)
+- 이번에 구현한 특성: Early Bird, Quick Draw, Stall(+Lagging Tail/Full Incense), Screen Cleaner, Moody, Pickup, Cud Chew, Opportunist, Magician, Pickpocket, Parental Bond, Ripen, Cheek Pouch, Mimicry, Analytic/Stakeout/Zoom Lens/Tangled Feet 조건, Mummy/Lingering Aroma/Wandering Spirit, Guard Dog, Hunger Switch(Aura Wheel 타입), Supersweet Syrup(한 번만), Long Reach/Protective Pads/Punching Glove 의 비접촉, Run Away 등. (Gluttony 는 챔피언스에 25% 열매가 없어 효과 없음, Symbiosis/Curious Medicine/Lightning Rod 유도는 싱글에서 대상이 없음.)
+- 이번에 구현한 기술/상태: 원더룸, 중력, 트집, 요정의자물쇠, 원한/으스스한주문, 마지막수단, 소란피기(소란 중 수면 불가), 역할놀이/엔트레인먼트/심술꾸러기/단순빔/위액, 대청소, 파워스플릿/가드스플릿/파워트릭/스피드스왑/하트스왑/가드스왑/파워스왑/싸이코업/거꾸로, 물의고리/뿌리박기/전자부유/작아지기/소금절임(챔피언스 1/8·1/16)/물엿폭탄(3번 하락)/문어꼼짝/봉인/쓰러뜨리기/노리트릿, 영혼의소리, 부식가스, 지시, 치유방울/아로마테라피, 자기장조작/기어업, 비축하기-내뿜기-삼키기, 치유파동, 티타임, 볼가득채우기, 따귀때리기, 하울링, 인구폭탄 개별 명중, 기가톤해머 연속 불가, 변덕레이저 30%, 레이징불/오라윌 타입, 스틸빔류 빗나가도 반동, 땅파기 중 지진 등 2배, 성스러운칼의 회피 무시 등.
+- 규칙 수정: 도구를 쓴 기록(`last_item`/`used_turn`), 미끌미끌 대신 `_use_item` 일원화, 드래그·레드카드는 뿌리박기/흡반이면 소모만 되고 교체 안 됨, 미래예지 피격 반응과 생명의구슬 반동, 모래바람은 땅파기/다이빙 중 피해 없음, 마지막으로 쓴 기술(따라하기)은 불려 나온 기술, 깜짝병기 조건은 모든 피해(반동 포함), 쓰러뜨려도 미라(Mummy) 발동.
 
 ## 남은 불일치 / 한계
-- 럼열매 + 피로 혼란 + 레드카드가 겹치는 순서(드문 경우). (Roar 와 교체가 겹치던 `s556` 은 해결됨)
-- 미구현(메타 비중 낮음): Cud Chew, Early Bird, Gluttony, Lightning Rod 유도, Magician/Pickpocket, Moody, Opportunist, Parental Bond, Pickup, Pressure(PP 없음), Quick Draw, Screen Cleaner, Stall, Symbiosis, Liquid Voice, Choice Band·Specs 같은 챔피언스에 없는 도구
-- 집중 검증에서 남은 드문 건: 긴장감(Unnerve) + 휴식 + 울부짖기/교체가 한 턴에 겹칠 때(sleeptalk 시드 7 `s8`, 5턴째 교체 불발)의 분포 차이, 캐스퐁 Forecast 와 날씨 겹침 일부(소수)
+- 럼열매 + 피로 혼란 + 레드카드가 겹치는 순서(드문 경우).
+- 집중 검증에서 남은 드문 건: 긴장감(Unnerve) + 휴식 + 울부짖기/교체가 한 턴에 겹칠 때의 분포 차이, 캐스퐁 Forecast 와 날씨 겹침 일부
 - 아슬아슬한승부로 쓰러진 사용자의 화상 표시를 Showdown 은 남기는 드문 경우(1대1 `lastmon` 시드 1 `s19`)
-- 마지막 포켓몬 동시 쓰러짐: Showdown(gen5+)은 마지막에 쓰러진 쪽이 승리 (반동 기술 사용자 승, 폭발/아슬아슬한승부 사용자 패) -> 엔진 반영
-- PP 일반 처리 없음 (되살리기만 특수 처리). 장기전 AI 판단에는 PP 가 필요할 수 있음
-- Poison Touch(독수)가 Showdown 에서 에써르(Indeedee)에게 걸리지 않는 현상은 원인 미확인 (사용자: 차차 찾기로 함)
+- Poison Touch(독수)가 Showdown 에서 에써르(Indeedee)에게 걸리지 않는 현상은 원인 미확인
+- 전수 대조를 항목당 4~10 시나리오로만 돌렸으므로 드문 조합은 아직 남아 있을 수 있다. 시드와 시나리오 수를 늘려 반복 (`coverage.py ... 12 100 4 <새 시드>`).
 - 미지원 효과 집계는 `eng.unsupported`
 
 ## 다음 단계
