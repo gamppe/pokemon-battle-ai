@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import dataclasses
 from dataclasses import dataclass, field
 
 from .gamedata import GameData, norm
@@ -57,6 +58,9 @@ class Mon:
     weight_hg: int = 0
     gender: str = "N"
     stats: dict = field(default_factory=dict)
+    hangry: bool = False
+    grounded_vol: bool = False   # 쓰러뜨리기/뿌리박기로 땅에 붙은 상태
+    levitating: bool = False     # 전자부유 중
     maxhp: int = 0
     hp: int = 0
     name: str = ""
@@ -68,8 +72,11 @@ class Mon:
 
 def make_mon(data: GameData, spec: dict) -> Mon:
     p = data.pokemon[spec["sid"]]
+    base_ = p["base"]
+    if spec.get("hero") and spec["sid"] == "palafin":                  # 파밀리-히어로 종족값 (자료에 별도 항목이 없어 직접 지정)
+        base_ = dict(base_, atk=160, def_=97, spa=106, spd=87)
     m = Mon(spec["sid"], spec.get("ability", ""), spec.get("item", ""), spec.get("nature", "Serious"), spec.get("sp", {}),
-            spec.get("boosts", {}), spec.get("status"), spec.get("hp_frac"), list(spec.get("types") or p["types"]), p["base"], name=p["name"])
+            spec.get("boosts", {}), spec.get("status"), spec.get("hp_frac"), list(spec.get("types") or p["types"]), base_, name=p["name"])
     sp = {k: m.sp.get(k, 0) for k in ("hp", "atk", "def", "spa", "spd", "spe")}
     plus, minus = data.natures.get(norm(m.nature), (None, None))
     m.stats = {}
@@ -80,12 +87,16 @@ def make_mon(data: GameData, spec: dict) -> Mon:
         elif minus == k:
             s = tr(tr(s * 90) % 65536 / 100)
         m.stats[k] = s
+    for k, v in (spec.get("stat_over") or {}).items():     # 파워스플릿/가드스플릿/파워트릭/스피드스왑으로 바뀐 수치
+        m.stats[k] = v
     w = p["weight_hg"]                                   # 몸무게(0.1kg 단위) + 무거운금속/가벼운금속 특성
     for r in data.ability_fx.get(norm(m.ability), []):
         if r["code"] == "weight_mult":
             w = w * 2 if r["value"] == 2 else tr(w * r["value"])
     m.weight_hg = max(1, w)
     m.gender = spec.get("gender", "N")
+    m.hangry = bool(spec.get("hangry"))
+    m.grounded_vol, m.levitating = bool(spec.get("grounded_vol")), bool(spec.get("levitating"))
     m.maxhp = m.base["hp"] + sp["hp"] + 75
     m.hp = m.maxhp if m.hp_frac is None else max(1, math.floor(m.maxhp * m.hp_frac))
     return m
@@ -96,6 +107,8 @@ class Field:
     weather: str | None = None   # rain / sun / sand / snow
     terrain: str | None = None   # electric / grassy / misty / psychic
     screens: tuple = ()          # 방어 쪽 진영: reflect / light_screen / aurora_veil
+    wonder: bool = False         # 원더룸: 방어/특방 수치 교환
+    gravity: bool = False        # 중력: 모두 땅에 붙는다
 
 
 def attacker_weather(c, F):
@@ -135,6 +148,10 @@ def has_item_flag(c: Ctx, mon: Mon, kind):
 def grounded(c: Ctx, mon: Mon):
     if mon.item and any(r["code"] == "grounded" for r in c.data.item_fx.get(norm(mon.item), [])):
         return True
+    if c.F.gravity or mon.grounded_vol:
+        return True
+    if mon.levitating:
+        return False
     ab_on = ability_active(c, mon)
     balloon = norm(mon.item) == "airballoon" and item_active(c, mon)
     if "Flying" in mon.types or (ab_on and norm(mon.ability) in ("levitate", "eelevate")) or balloon:
@@ -194,6 +211,10 @@ def cond_ok(c: Ctx, cond: dict, me: Mon, foe: Mon, label: str, cat=None):
         elif k in ("same_gender", "opposite_gender"):
             both = c.A.gender in ("M", "F") and c.D.gender in ("M", "F")
             ok = both and ((c.A.gender == c.D.gender) if k == "same_gender" else (c.A.gender != c.D.gender))
+        elif k in ("moves_last", "moves_after_target"):
+            ok = "user_moves_after_target" in c.flags
+        elif k == "target_switched_in":
+            ok = "target_switched_in" in c.flags
         elif k == "flash_fire_active":
             ok = "flash_fire_active" in c.flags
         elif k == "target_side":
@@ -258,6 +279,23 @@ def apply_rows(c: Ctx, chain: Chain, rows, me, foe, kinds=("mult",), cat=None):
             c.used.append(r["label"])
 
 
+_FLING = None
+
+
+def _fling_powers():
+    """Showdown 도구 데이터(etl/cache_sd_items.json)의 던지기 위력 -- DB 표에 없는 도구를 보충한다"""
+    global _FLING
+    if _FLING is None:
+        import json
+        import os
+        try:
+            raw = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "etl", "cache_sd_items.json"), encoding="utf-8"))
+            _FLING = {k: v["fling"]["basePower"] for k, v in raw.items() if v.get("fling")}
+        except Exception:
+            _FLING = {}
+    return _FLING
+
+
 def speed(c: Ctx, mon: Mon):
     """Showdown getStat('spe'): 능력 단계 -> ModifySpe 연쇄(특성/도구) -> 마비(속도 절반, 속보 특성은 무시)"""
     table = [1, 1.5, 2, 2.5, 3, 3.5, 4]
@@ -277,11 +315,22 @@ def item_active_ability_ok(c):
 
 
 def type_effectiveness(c: Ctx, move_type: str, defender: Mon):
-    """(typeMod, immune)"""
+    """(typeMod, immune) -- 플라잉프레스처럼 두 번째 타입(extra_type)이 있는 기술은 두 타입의 배율을 곱한다"""
+    mod, immune = _type_eff_single(c, move_type, defender)
+    for r in c.move.get("rules", []):
+        if r["type"] == "effectiveness_mod" and r["params"].get("extra_type"):
+            m2, i2 = _type_eff_single(c, r["params"]["extra_type"], defender)
+            mod, immune = mod + m2, immune or i2
+    return mod, immune
+
+
+def _type_eff_single(c: Ctx, move_type: str, defender: Mon):
     mod, immune = 0, False
     ign = (c.move.get("extra") or {}).get("ignoreImmunity")
+    if "real_immunity" in c.flags:                        # 미래예지가 실제로 맞을 때는 면역을 무시하지 않는다
+        ign = None
     ghost_ok = has_ability_code(c, c.A, "ghost_immunity") and move_type in ("Normal", "Fighting")   # 배짱: 고스트에도 적중
-    ignore_ground = any(r["code"] == "ground_immunity" for r in c.data.item_fx.get(norm(c.D.item), []))
+    ignore_ground = c.F.gravity or c.D.grounded_vol or any(r["code"] == "ground_immunity" for r in c.data.item_fx.get(norm(c.D.item), []))
     forced = {}
     for r in c.move.get("rules", []):
         if r["type"] == "effectiveness_mod" and r["params"].get("vs_type"):
@@ -299,7 +348,7 @@ def type_effectiveness(c: Ctx, move_type: str, defender: Mon):
         elif m < 1:
             mod -= 1
     # 특성/도구의 땅 기술 무효 (Levitate/Eelevate/Air Balloon)
-    if move_type == "Ground" and not grounded(c, defender) and "Flying" not in defender.types:
+    if move_type == "Ground" and not grounded(c, defender) and ("Flying" not in defender.types or defender.levitating):
         immune = True
     return mod, immune
 
@@ -389,11 +438,20 @@ def base_power(c: Ctx):
             elif f in ("times_attacked", "fainted_allies"):     # 분노의주먹/추도: 엔진이 flags 로 횟수를 알려줌
                 n = next((int(x.split(":")[1]) for x in c.flags if x.startswith(f + ":")), 0)
                 bp = min(p.get("cap", 10 ** 9), p["base"] + p["per"] * n)
+            elif f == "stockpile_layers":        # 내뿜기: 위력 = 100 x 비축 층수
+                n = next((int(x.split(":")[1]) for x in c.flags if x.startswith("stockpile:")), 0)
+                bp = p["per"] * n
+                if not n:
+                    c.fail = "no_stockpile"
+            elif f == "party_atk":               # 따귀때리기: 파티원 한 마리의 기본 공격력
+                n = next((int(x.split(":")[1]) for x in c.flags if x.startswith("beatup:")), c.A.base["atk"])
+                bp = p["base"] + n // p["div"]
             elif f == "hit_index":               # 트리플악셀: 타수마다 위력 증가
                 bp = p["per"] * c.hit
             elif f == "item_fling_power":        # 내던지기: 지닌 도구에 따라 위력
                 it = c.A.item
-                table = {norm(k): v for k, v in p["table"].items()}
+                table = dict(_fling_powers())
+                table.update({norm(k): v for k, v in p["table"].items()})
                 if not it or not item_active(c, c.A) or norm(it) not in table:
                     c.fail = "fling_fail"
                 else:
@@ -435,7 +493,7 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
     # 메가솔: 공격하는 동안 (양쪽 포켓몬 모두에 대한) 날씨 판정이 전부 쾌청. 날씨 무효화 특성보다 우선한다.
     megasol = any(r["code"] == "treat_weather_as:sun" for r in data.ability_fx.get(norm(A.ability), []))
     if megasol and mega_sol_mode == "field_sun":
-        F = Field("sun", F.terrain, F.screens)
+        F = dataclasses.replace(F, weather="sun")
     # 날씨 무효화(Cloud Nine 등): 필드에 이 특성이 있으면 날씨 효과가 모두 사라진다
     elif any(r["code"] == "negate_weather" for m_ in (A, D) for r in data.ability_fx.get(norm(m_.ability), [])):
         F = Field(None, F.terrain, F.screens)
@@ -475,6 +533,9 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
             elif p.get("by") == "terrain":
                 t = p["table"].get(F.terrain)
                 if t and grounded(c, A): mv["type"] = t
+            elif p.get("by") == "form":                       # 레이징불: 사용자의 폼에 따라 타입이 정해진다 (오라윌: Morpeko 모양)
+                t = next((v for k_, v in p["table"].items() if norm(k_) == norm(A.sid) + ("hangry" if A.hangry else "")), None)
+                if t: mv["type"] = t
             else:
                 c.note_unsupported(f"{mv['name']}: 타입 규칙 {p.get('by')}")
     # ── 분류 선택 (Shell Side Arm) ──
@@ -493,6 +554,9 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
             elif phys > spec:
                 mv["category"] = "physical"
                 mv["flags"] = set(mv["flags"]) | {"contact"}
+    for x_ in flags:                                  # 일렉트리파이: 이 턴 기술이 전기 타입으로
+        if x_.startswith("retype:") and norm(mv["name"]) != "struggle":
+            mv["type"] = x_.split(":")[1]
     # ── 면역 ──
     mod, immune = type_effectiveness(c, mv["type"], D)
     if immune:
@@ -511,6 +575,7 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
     # 장판(테라인)/오라 등 필드 규칙 + 공격 측 특성/도구 (Technician처럼 위력 상한 조건이 있는 행을 먼저)
     own = [r for r in fx_rows(c, A, "modify_bp") if r["cond"].get("target_side") != "ally"]
     aura = [r for r in fx_rows(c, D, "modify_bp") if r["cond"].get("target_side") == "all"]
+    aura = [r for r in aura if not any(o["label"] == r["label"] for o in own)]      # 같은 오라는 기술당 한 번만 적용 (Showdown auraBooster)
     foe_bp = fx_rows(c, D, "modify_bp_foe")
     tfx = [r for st in ([F.terrain + "_terrain"] if F.terrain else []) for r in data.state_fx.get(st, []) if r["hook"] == "modify_bp"]
     first = [r for r in own if "bp_max" in r["cond"]]
@@ -519,6 +584,8 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
         apply_rows(c, ch, [r], A, D)
     for m in rule_mults:
         ch.mul(m)
+    if "charged" in c.flags and mv["type"] == "Electric":          # 충전(Charge/전기흡수) 상태: 다음 전기 기술 위력 x2
+        ch.mul(2.0)
     if norm(c.A.ability) == "supremeoverlord" and item_active_ability_ok(c):
         n = min(5, next((int(x.split(":")[1]) for x in c.flags if x.startswith("fainted_allies:")), 0))
         if n:
@@ -536,6 +603,13 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
     ak = ex.get("overrideOffensiveStat") or ("atk" if physical else "spa")
     dk = ex.get("overrideDefensiveStat") or ("def" if physical else "spd")
     off_mon = D if ex.get("overrideOffensivePokemon") == "target" else A
+    if F.wonder and ak in ("def", "spd"):                # 바디프레스 등: 원더룸에서는 반대쪽 능력 단계를 쓴다
+        ak = "spd" if ak == "def" else "def"
+
+    def stat_of(mon, k):                                 # 원더룸: 방어/특방 수치가 서로 바뀐다 (능력 단계는 이름 그대로)
+        if F.wonder and k in ("def", "spd"):
+            return mon.stats["spd" if k == "def" else "def"]
+        return mon.stats[k]
     ab, db = off_mon.boosts.get(ak, 0), D.boosts.get(dk, 0)
     if has_ability_code(c, D, "foe_stat_stages"):       # 천진(Unaware): 공격 쪽 능력 변화 무시
         ab = 0
@@ -552,7 +626,7 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
     def boosted(s, b):
         b = max(-6, min(6, b))
         return math.floor(s * table[b]) if b >= 0 else math.floor(s / table[-b])
-    atk, dfn = boosted(off_mon.stats[ak], ab), boosted(D.stats[dk], db)
+    atk, dfn = boosted(stat_of(off_mon, ak), ab), boosted(stat_of(D, dk), db)
     # 날씨의 방어 보정(모래바람 바위 특방, 눈 얼음 방어)은 연쇄 곱 이전에 직접 적용
     dcat = "physical" if dk == "def" else "special"
     acat = "physical" if ("atk" if physical else "spa") == "atk" else "special"
@@ -574,6 +648,8 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
     base = tr(tr(tr(tr(2 * LEVEL / 5 + 2) * bp * atk) / dfn) / 50)
     # ── modifyDamage ──
     base += 2
+    if "pb2" in flags:                               # 부자유친 두 번째 타: modifyDamage 에서 baseDamage x0.25 (날씨·급소·난수 이전)
+        base = modify(base, 0.25)
     wthr = attacker_weather(c, F)
     if wthr in ("rain", "sun"):
         wch = Chain()
@@ -601,11 +677,17 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
         apply_rows(c, fch, fx_rows(c, A, "modify_dmg_dealt"), A, D)
         apply_rows(c, fch, fx_rows(c, D, "modify_dmg_taken"), D, A)
         for sc in ([] if has_ability_code(c, A, "substitute_and_screens") else F.screens):   # 침투: 벽 무시
+            if sc == "aurora_veil" and (("reflect" in F.screens and mv["category"] == "physical") or ("light_screen" in F.screens and mv["category"] == "special")):
+                continue                                              # 오로라베일은 같은 분류의 리플렉터/빛의장막이 있으면 따로 적용되지 않는다
             for row in data.state_fx.get(sc, []):
                 if row["hook"] == "modify_dmg_taken" and cond_ok(c, row["cond"], D, A, row["label"]) \
                         and (row["cond"].get("move_category", "").split("|") and mv["category"] in row["cond"]["move_category"].split("|")):
                     fch.mul(row["value"]); c.used.append(row["label"])
         d = fch.apply(d)
+        if "target_minimized_semi" in flags:
+            d = modify(d, 2)
+        if "target_minimized" in flags and "minimize" in mv["flags"]:      # 작아지기 상태의 상대에게 몸집 기술은 2배
+            d = modify(d, 2)
         if d == 0:
             d = 1
         rolls.append(d % 65536)
@@ -613,4 +695,4 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
     for u in c.used:
         if u not in seen:
             seen.append(u)
-    return dict(rolls=rolls, reason=None, used=seen, unsupported=c.unsupported, mid=dict(moveType=mv['type'], bp0=bp0, bp=bp, typeMod=mod, atk=atk, dfn=dfn))
+    return dict(rolls=rolls, reason=None, used=seen, unsupported=c.unsupported, mid=dict(moveType=mv['type'], category=mv['category'], flags=mv['flags'], bp0=bp0, bp=bp, typeMod=mod, atk=atk, dfn=dfn))

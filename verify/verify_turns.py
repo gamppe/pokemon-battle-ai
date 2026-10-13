@@ -29,14 +29,21 @@ SD_TERRAIN = {"electric": "electricterrain", "grassy": "grassyterrain", "misty":
 SD_SIDE = {"reflect": "reflect", "light_screen": "lightscreen", "aurora_veil": "auroraveil", "tailwind": "tailwind", "safeguard": "safeguard"}
 
 
-def make_scenarios(meta, data, n, turns, seed, only=None):
+def make_scenarios(meta, data, n, turns, seed, only=None, switch=0.0):
     rng = random.Random(seed)
+    mega_pool = set(Engine(data).mega_map)
     pairs = []
     for sid in meta.top_species(60):
         for mk, p in meta.moves.get(sid, []):
             if p >= 0.1 and mk in data.moves and (not only or norm(only) == mk):
                 pairs.append((sid, mk))
     sc = []
+
+    def mega(team, a):
+        """메가스톤을 든 포켓몬이 있는 팀은 가끔 메가진화 + 기술 (엔진/Showdown 모두 가능한 때만 적용, 아니면 기본 행동으로 대체)"""
+        if a[0] == "m" and mega_pool and any(norm(m.get("item", "")) in mega_pool for m in team) and rng.random() < 0.35:
+            return ("M", a[1])
+        return a
     for k in range(n):
         sid, mk = rng.choice(pairs)
         t0 = meta.random_team(rng)
@@ -48,17 +55,43 @@ def make_scenarios(meta, data, n, turns, seed, only=None):
             first = [("s", 1), ("m", rng.randrange(len(t1[0]["moves"])))]
         else:
             first = [("m", 0), ("m", rng.randrange(len(t1[0]["moves"])))]
+        first = [mega(t0, first[0]), mega(t1, first[1])]
         tl = [first]
         for _ in range(turns - 1):
-            tl.append([("m", rng.randrange(len(t0[0]["moves"]))), ("m", rng.randrange(len(t1[0]["moves"])))])
+            row = []
+            for lead_t in (t0, t1):
+                if switch and rng.random() < switch:            # 교체 (그 시점에 불가능하면 양쪽 모두 기본 행동으로 대체된다)
+                    row.append(("s", rng.choice([1, 2])))
+                else:
+                    row.append(mega(lead_t, ("m", rng.randrange(len(lead_t[0]["moves"])))))
+            tl.append(row)
         sc.append(dict(id=f"s{k}", teams=[t0, t1], turns=tl, key=mk))
     return sc
+
+
+def vols(m):
+    """필드에 있는 포켓몬의 임시 상태 (Showdown 의 volatiles 와 같은 이름으로 맞춘다)"""
+    v = [k for k in ("confusion", "leechseed", "curse", "focusenergy") if k in m.vol]
+    if m.taunt:
+        v.append("taunt")
+    if m.encore:
+        v.append("encore")
+    if m.disabled:
+        v.append("disable")
+    if m.sub > 0:
+        v.append("substitute")
+    if m.healblock:
+        v.append("healblock")
+    if m.yawn:
+        v.append("yawn")
+    return ",".join(sorted(v))
 
 
 def summarize_ours(st):
     mons = []
     for side in st.sides:
-        mons.append([dict(hp=m.hp, st=m.status or "", b={k: v for k, v in m.boosts.items() if v}, it=norm(m.item or m.hid_item), fnt=int(not m.alive))
+        mons.append([dict(hp=m.hp, st=m.status or "", b={k: v for k, v in m.boosts.items() if v}, it=norm(m.item or m.hid_item), fnt=int(not m.alive),
+                          v=vols(m) if (m is side.mon and m.alive) else "", pp=list(m.pp))
                      for m in side.team])
     sc = []
     for side in st.sides:
@@ -95,6 +128,9 @@ def flatten(s):
             d[f"hp:{side}:{i}"] = m["hp"]
             d[f"st:{side}:{i}"] = m["st"]
             d[f"it:{side}:{i}"] = m["it"]
+            d[f"v:{side}:{i}"] = m.get("v", "")
+            for j, v in enumerate(m.get("pp", [])):
+                d[f"pp:{side}:{i}:{j}"] = v
             for k, v in m["b"].items():
                 d[f"b:{side}:{i}:{k}"] = v
         d[f"act:{side}"] = s["act"][side]
@@ -111,7 +147,7 @@ def compare(a_runs, b_runs, alpha):
     keys = set().union(*[d.keys() for d in A + B])
     bad = []
     for k in sorted(keys):
-        default = "" if k.split(":")[0] in ("st", "it", "w", "t") else 0
+        default = "" if k.split(":")[0] in ("st", "it", "w", "t", "v") else 0
         va = [d.get(k, default) for d in A]
         vb = [d.get(k, default) for d in B]
         eff = None
@@ -183,6 +219,7 @@ def main():
     ap.add_argument("--turns", type=int, default=1)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--snap", type=int, default=33)
+    ap.add_argument("--switch", type=float, default=0.0, help="2턴째부터 각 쪽이 기술 대신 교체를 고를 확률")
     ap.add_argument("--only")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--alpha", type=float, default=1e-5)
@@ -196,7 +233,7 @@ def main():
     conn = connect()
     data = GameData(conn)
     meta = Meta(conn, data, a.snap)
-    scs = make_scenarios(meta, data, a.n, a.turns, a.seed, a.only)
+    scs = make_scenarios(meta, data, a.n, a.turns, a.seed, a.only, a.switch)
     fin, fout = os.path.join(OUT, "turns_in.json"), os.path.join(OUT, "turns_sd.json")
     json.dump([dict(id=s["id"], teams=s["teams"], turns=s["turns"], runs=a.runs, seed=a.seed) for s in scs], open(fin, "w"))
     t0 = time.time()
