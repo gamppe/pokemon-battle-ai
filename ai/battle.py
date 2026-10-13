@@ -1054,6 +1054,8 @@ class Engine:
         if "imprison" in foe_.vol and foe_.alive:           # 봉인: 상대가 알고 있는 기술은 쓸 수 없다
             blocked = {norm(m_) for m_ in foe_.spec["moves"]}
             ks = [k for k in ks if norm(moves[k]) not in blocked]
+        if bm.last_move:                                    # 기가톤해머/블러드문: 연속으로 쓸 수 없다
+            ks = [k for k in ks if not (norm(moves[k]) == bm.last_move and "cantusetwice" in self.data.moves[norm(moves[k])]["flags"])]
         if "torment" in bm.vol and bm.last_move and bm.last_move != "struggle":          # 트집: 같은 기술을 연속으로 쓸 수 없다
             ks = [k for k in ks if norm(moves[k]) != bm.last_move]
         if bm.healblock:                                    # 힐블록: 회복 기술은 고를 수 없다
@@ -1933,7 +1935,7 @@ class Engine:
                 and norm(A_.ability) not in MOLD_BREAKERS and rng.random() < 0.3:        # 저주받은바디: 맞으면 30% 로 공격한 기술을 봉인
             A_.disabled, A_.disable_n = norm(mv["name"]), 4
         dab_ = norm(D.ability)
-        if dab_ in ("mummy", "lingeringaroma", "wanderingspirit") and "contact" in mv["flags"] and A_.alive and D.alive:      # 접촉한 공격자의 특성을 바꾼다
+        if dab_ in ("mummy", "lingeringaroma", "wanderingspirit") and "contact" in mv["flags"] and A_.alive:      # 접촉한 공격자의 특성을 바꾼다 (쓰러뜨려도 발동)
             flags_ = lambda x_, f_: f_ in self.abil_flags.get(norm(x_.ability), [])
             if dab_ == "wanderingspirit":
                 if not flags_(A_, "failskillswap") and not flags_(D, "failskillswap"):
@@ -2356,6 +2358,27 @@ class Engine:
                 return
         if key == "noretreat" and "noretreat" in A.vol:
             self._sfail = True
+            return
+        if key == "instruct":                                  # 지시: 대상이 마지막에 쓴 기술을 곧바로 한 번 더 쓰게 한다
+            lm = D.last_move
+            mvI = self.data.moves.get(lm) if lm else None
+            slot = self._slot_of(D, lm) if lm else None
+            if D.alive and mvI and "failinstruct" not in mvI["flags"] and slot is not None and slot < len(D.pp) and D.pp[slot] > 0 \
+                    and not D.charge and not D.recharge:
+                self._say(st, f"  지시 -> {mvI['name']}")
+                self._deduct_pp(st, o, D, slot, mvI, rng)
+                self._run_move(st, o, mvI, lm, self._acts, rng, self._policy)
+            else:
+                self._sfail = True
+            return
+        if key in ("healbell", "aromatherapy"):                # 파티 전체의 상태이상을 치료한다 (힐벨: 방음 특성은 제외)
+            cured = False
+            for m_ in st.sides[i].team:
+                if m_.status and m_.alive and not (key == "healbell" and m_ is not A and norm(m_.ability) == "soundproof"):
+                    m_.status = None
+                    cured = True
+            if not cured:
+                self._sfail = True
             return
         if key == "fairylock":                 # 요정의자물쇠: 다음 턴에 모두 교체할 수 없다
             if not st.fairy_lock:
