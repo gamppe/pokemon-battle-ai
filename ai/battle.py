@@ -703,6 +703,7 @@ class Engine:
                 return
             self._run_switch_in(st, side, bm, rng)
             self._forecast_sync(st)
+            self._update_berries(st, rng)                        # 긴장감 보유자가 나가면 막혀 있던 열매를 바로 먹는다
         if defer:                                           # 동시에 교체되면 등장 효과는 모두 나온 뒤 현재 속도 순으로 처리된다
             return effects
         effects()
