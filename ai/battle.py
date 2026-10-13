@@ -2253,7 +2253,7 @@ class Engine:
     def _self_destruct_fail(self, st, i, mv):
         """자폭 기술(Explosion 등)은 막히거나 빗나가거나 면역이어도 쓰는 순간 쓰러진다 (Showdown selfdestruct: 'always')"""
         A = st.sides[i].mon
-        if norm(mv["name"]) == "fling" and A.item:                       # 던지기는 막히거나 빗나가도 도구를 쓴 뒤 잃는다 (onPrepareHit)
+        if norm(mv["name"]) == "fling" and A.item and norm(A.ability) != "klutz" and "embargo" not in A.vol:                       # 던지기는 막히거나 빗나가도 도구를 쓴 뒤 잃는다 (onPrepareHit)
             A.item = ""
         if mv["self_destruct"] and mv["category"] != "status" and A.alive and norm(mv["name"]) != "finalgambit":      # 아슬아슬한승부는 맞았을 때만 (selfdestruct: ifHit)
             self.hp_change(st, i, A, -A.hp, "자폭")
