@@ -76,6 +76,7 @@ class BMon:
     moves_made: int = 0
     locked: str | None = None
     unnerved: bool = False                    # 긴장감 때문에 열매를 먹지 못한 상태 (긴장감이 사라지면 다시 판정)
+    faint_logged: bool = False                # 쓰러짐 순서를 이미 기록했는지 (자폭 기술은 사용 시점에 먼저 기록)
     last_item: str = ""                       # 마지막으로 먹은 열매 (수확 특성용)
     abil_orig: str | None = None            # 트레이스/특성교환으로 바뀌기 전의 특성 (교체하면 복원)
     recharge: bool = False
@@ -146,6 +147,7 @@ class State:
     lastmove_any: str = ""             # 전투 전체에서 마지막으로 쓰인 기술 (Copycat)
     turn: int = 0
     winner: int | None = None        # 0 / 1 / -1(무승부)
+    last_faint_side: int | None = None   # 가장 나중에 쓰러진 쪽 (마지막 포켓몬이 동시에 쓰러지면 이 쪽이 승리: Showdown checkWin)
     last_hit: list = field(default_factory=lambda: [0, 0])
     last_cat: list = field(default_factory=lambda: ["", ""])
     log: list | None = None
@@ -282,7 +284,12 @@ class Engine:
         if delta > 0 and bm.healblock:
             return 0
         bm.hp = max(0, min(bm.maxhp, bm.hp + delta))
+        if not before and bm.hp:
+            bm.faint_logged = False
         if before and not bm.hp:
+            if not bm.faint_logged:
+                st.last_faint_side = side
+            bm.faint_logged = True
             bm.status = None
             bm.boosts = {}                                  # 쓰러지면 능력 단계도 초기화된다 (Showdown clearVolatile)
             self._say(st, f"  {bm.name} 쓰러짐 ({why})")
@@ -920,7 +927,7 @@ class Engine:
     def _check_winner(self, st):
         dead = [not st.sides[i].alive_idx() for i in (0, 1)]
         if dead[0] and dead[1]:
-            st.winner = -1
+            st.winner = st.last_faint_side if st.last_faint_side in (0, 1) else -1      # 동시에 전멸하면 마지막에 쓰러진 쪽이 이긴다 (반동으로 쓰러진 쪽 승리, 자폭한 쪽 패배)
         elif dead[0]:
             st.winner = 1
         elif dead[1]:
@@ -1083,6 +1090,8 @@ class Engine:
         S = st.sides[i]
         bm = S.mon
         self._bypass_sub = "bypasssub" in mv["flags"] or norm(bm.ability) == "infiltrator"
+        if mv["self_destruct"] and mv["category"] != "status" and norm(mv["name"]) != "finalgambit" and not bm.faint_logged:
+            st.last_faint_side, bm.faint_logged = i, True      # 폭발류는 사용자가 먼저 쓰러진 것으로 기록된다 (faint 가 대상 타격보다 앞)
         bm.used.add(norm(mname))
         if norm(mv["name"]) not in STALL_MOVES:
             bm.protect_n = 0
@@ -1351,6 +1360,7 @@ class Engine:
                     self._say(st, "  효과 없음")
                     return
                 dmg, crit = A.hp, False
+                st.last_faint_side, A.faint_logged = i, True           # 아슬아슬한승부: 사용자의 기절이 대상보다 먼저 기록된다
             elif key == "superfang":
                 if self._chart_immune(mv, D):
                     return
@@ -1564,6 +1574,10 @@ class Engine:
         D = st.sides[o].mon
         if norm(D.item) == "airballoon":
             D.item = ""
+        A_ = st.sides[i].mon
+        if norm(D.ability) == "cursedbody" and A_.alive and not A_.disabled and norm(mv["name"]) != "struggle" \
+                and norm(A_.ability) not in MOLD_BREAKERS and rng.random() < 0.3:        # 저주받은바디: 맞으면 30% 로 공격한 기술을 봉인
+            A_.disabled, A_.disable_n = norm(mv["name"]), 5
         if norm(D.ability) in ("electromorphosis", "windpower"):      # 맞으면 충전 상태 (onDamagingHit -> addVolatile('charge'))
             D.charged = 2
         if "beakblast" in D.vol and "contact" in mv["flags"] and st.sides[i].mon.alive:      # 부리캐논 대기 중 접촉 -> 공격자 화상 (타마다)
