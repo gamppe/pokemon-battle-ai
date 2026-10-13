@@ -1872,6 +1872,8 @@ class Engine:
                 if src_ == "ability" and r_["kind"] in ("status", "volatile") and self._cond_ok(r_["cond"], st, i, A, mv, None):
                     self.apply_row(st, "ability:" + r_["label"].split(":", 1)[1], r_, i, A, rng, mv, total, o)
         self._secondary(st, i, o, mv, rng, hit_sub)      # 대타는 상대에게 걸리는 부가효과만 막고, 자신에게 걸리는 효과(불꽃의charge 등)는 그대로 적용
+        if nhits == 1 and norm(D.item) == "airballoon" and not hit_sub:
+            D.item = ""                                    # 풍선은 부가효과(마비 등)를 판정한 뒤에 터진다
         if deferred and D.alive and st.sides[o].mon is D:                  # 열매 등 HP 조건 효과: 부가효과(힐블록 등)가 끝난 뒤에 판단
             self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=deferred[0], dmg=deferred[1], hp_before=deferred[2], foe_side=i)
         if key == "jawlock" and A.alive and D.alive and not hit_sub:                    # 흡착턱: 서로 교체할 수 없다
@@ -1887,6 +1889,8 @@ class Engine:
             if key == "knockoff" and D.item and (norm(D.ability) != "stickyhold" or not D.alive) and not (
                     self._own_stone(D)):
                 D.item = ""
+            elif key == "knockoff" and D.hid_item and (norm(D.ability) != "stickyhold" or not D.alive):
+                D.hid_item = ""                                       # 매직룸으로 가려진 도구도 탁쳐서떨구기는 떨어뜨린다
         if D.alive:
             if not hit_sub:
                 for e in mv["effects"]:
@@ -1998,8 +2002,8 @@ class Engine:
         """피격 후 처리: 방어자의 on_hit_taken / on_damage_taken_hp / (급소) on_crit_taken.
         defer=True 면 HP 조건 효과(열매 등)는 부가효과 뒤로 미룬다 (Showdown 은 열매를 Update 에서 먹는다)"""
         D = st.sides[o].mon
-        if norm(D.item) == "airballoon":
-            D.item = ""
+        if norm(D.item) == "airballoon" and not defer:
+            D.item = ""                                    # 단일 타격은 부가효과 뒤에 터진다 (아래 _damage_move)
         A_ = st.sides[i].mon
         if norm(D.ability) == "cursedbody" and A_.alive and not A_.disabled and norm(mv["name"]) != "struggle" \
                 and norm(A_.ability) not in MOLD_BREAKERS and rng.random() < 0.3:        # 저주받은바디: 맞으면 30% 로 공격한 기술을 봉인
