@@ -1838,12 +1838,8 @@ class Engine:
                     and norm(D.ability) != "stickyhold" and not any(r["code"] == "foe_cannot_eat_berries" for r in self.data.ability_fx.get(norm(D.ability), [])):                # 벌레먹기/쪼기: 상대의 열매를 빼앗아 바로 먹고 효과를 얻는다
                 berry, own = D.item, A.item
                 D.item, A.item = "", berry
-                for hook_ in ("on_damage_taken_hp", "on_status"):         # 먹은 즉시 열매의 효과가 나온다 (HP 조건은 보지 않는다)
-                    for src_, r_ in self.rows(A, hook_):
-                        if src_ == "item" and A.item == berry:
-                            self.apply_row(st, "item:" + r_["label"].split(":", 1)[1], r_, i, A, rng)
+                self._eat_again(st, i, A, berry, rng)                 # 먹은 즉시 열매의 효과가 나온다 (HP 조건은 보지 않고, 레프파열매는 PP 회복)
                 A.ate_berry = True
-                A.last_item, A.used_turn = berry, st.turn
                 A.item = own
             if key == "fling":
                 self._fling_throw(st, i, o, A, D, rng, hit_sub)
@@ -1979,12 +1975,10 @@ class Engine:
             if not D.alive or hit_sub:
                 pass
             elif thrown.endswith("berry"):
-                own_, last_ = D.item, D.last_item
+                own_, last_, used_ = D.item, D.last_item, D.used_turn
                 D.item = thrown
-                for hook_ in ("on_damage_taken_hp", "on_status"):
-                    for src_, r_ in self.rows(D, hook_):
-                        if src_ == "item" and D.item == thrown:
-                            self.apply_row(st, "item:" + r_["label"].split(":", 1)[1], r_, o, D, rng)
+                self._eat_again(st, o, D, thrown, rng)
+                D.used_turn = used_
                 D.ate_berry = True
                 D.last_item = last_                           # 던져 맞은 열매는 eatItem 이 아니라서 마지막 도구로 기록되지 않는다
                 D.item = own_
