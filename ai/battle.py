@@ -152,6 +152,7 @@ class State:
     terrain_turns: int = 0
     trick_room: int = 0
     magic_room: int = 0
+    wonder_room: int = 0
     lastmove_any: str = ""             # 전투 전체에서 마지막으로 쓰인 기술 (Copycat)
     turn: int = 0
     winner: int | None = None        # 0 / 1 / -1(무승부)
@@ -320,7 +321,7 @@ class Engine:
 
     def field_for(self, st, defender_side):
         scr = tuple(k for k in SCREENS if st.sides[defender_side].screens.get(k, 0) > 0)
-        return Field(self.wx(st), st.terrain, scr)
+        return Field(self.wx(st), st.terrain, scr, bool(st.wonder_room))
 
     def rolls(self, st, ai_, di_, move_key, crit, hit=1, pb=False, extra=None):
         A, D = st.sides[ai_].mon, st.sides[di_].mon
@@ -365,7 +366,7 @@ class Engine:
         fl.add(f"fainted_allies:{sum(1 for m in st.sides[ai_].team if not m.alive)}")
         fl = frozenset(fl)
         key = (fl, repr(sorted((k, repr(v)) for k, v in sa.items())), repr(sorted((k, repr(v)) for k, v in sd.items())),
-               move_key, F.weather, F.terrain, F.screens, crit, hit)
+               move_key, F.weather, F.terrain, F.screens, F.wonder, crit, hit)
         r = self._dmg_cache.get(key)
         if r is None:
             r = calc(self.data, sa, sd, mv["name"], F, crit, hit=hit, proc=False, flags=fl)
@@ -1161,13 +1162,13 @@ class Engine:
         return p
 
     # ───────────────────────── 행동 수행 ─────────────────────────
-    def _confusion_damage(self, bm, rng):
+    def _confusion_damage(self, bm, rng, wonder=False):
         """혼란 자해: 위력 40 의 무속성 물리 공식 (공격/방어 스탯과 단계만 반영, 난수 85~100%) -- Showdown getConfusionDamage"""
         m = make_mon(self.data, self.spec_of(bm))
 
         def stage(v, b):
             return v * (2 + b) // 2 if b >= 0 else v * 2 // (2 - b)
-        atk, dfn = stage(m.stats["atk"], bm.boosts.get("atk", 0)), stage(m.stats["def"], bm.boosts.get("def", 0))
+        atk, dfn = stage(m.stats["atk"], bm.boosts.get("atk", 0)), stage(m.stats["spd" if wonder else "def"], bm.boosts.get("def", 0))
         base = 22 * 40 * atk // dfn // 50 + 2
         return max(1, base * (100 - rng.randrange(16)) // 100)
 
@@ -1195,7 +1196,7 @@ class Engine:
             if bm.confusion <= 0:
                 bm.vol.discard("confusion")
             elif rng.random() < 0.33:                       # Showdown: randomChance(33, 100)
-                self.hp_change(st, i, bm, -min(bm.hp, self._confusion_damage(bm, rng)), "혼란")
+                self.hp_change(st, i, bm, -min(bm.hp, self._confusion_damage(bm, rng, bool(st.wonder_room))), "혼란")
                 return False
         if bm.status == "par" and rng.random() < 0.125:       # 챔피언스: 행동 불가 1/8
             return False
@@ -1286,11 +1287,11 @@ class Engine:
                 if chg.get("evasion_max") in ("flying", "underground", "underwater", "shadow"):
                     bm.semi = [norm(x) for x in chg.get("hit_by_moves", [])]
                 self._say(st, "  충전")
+                st.lastmove_any = norm(mname)
                 return
         self._run_move(st, i, mv, mname, acts, rng, switch_policy)
         if mv["type"] == "Electric" and bm.charged:                 # 전기 기술을 쓰고 나면 충전 해제 (onAfterMove)
             bm.charged = 0
-        st.lastmove_any = norm(mname)                       # Copycat 용: 전투 전체에서 마지막으로 쓰인 기술
         self._update_berries(st, rng)
         self._hp_berry_update(st, rng)
         self._leppa_update(st, rng)
@@ -1307,6 +1308,7 @@ class Engine:
         if mv["self_destruct"] and mv["category"] != "status" and norm(mv["name"]) != "finalgambit" and not bm.faint_logged:
             st.last_faint_side, bm.faint_logged = i, True      # 폭발류는 사용자가 먼저 쓰러진 것으로 기록된다 (faint 가 대상 타격보다 앞)
         bm.used.add(norm(mname))
+        self._lm_prev, st.lastmove_any = st.lastmove_any, norm(mname)      # Copycat 용 마지막 기술 (다른 기술을 불러 쓰면 불려 나온 기술이 마지막 기술이 된다)
         if norm(mv["name"]) not in STALL_MOVES:
             bm.protect_n = 0
         if not self._use_condition_ok(st, i, mv, acts):
@@ -1449,6 +1451,10 @@ class Engine:
             req = p.get("requires", "")
             if req == "first_turn_after_switch_in" and bm.moves_made != 1:
                 return False
+            if req == "all_other_moves_used_since_switch_in":         # 마지막수단: 다른 기술을 모두 한 번씩 쓴 뒤에만 쓸 수 있다
+                others = [norm(m_) for m_ in bm.spec["moves"] if norm(m_) != norm(mv["name"])]
+                if len(bm.spec["moves"]) < 2 or not others or any(m_ not in bm.used for m_ in others):
+                    return False
             if req == "target_has_item" and not st.sides[1 - i].mon.item:
                 return False
             if req == "user_ate_berry" and not bm.ate_berry:
@@ -1729,6 +1735,10 @@ class Engine:
         self._secondary(st, i, o, mv, rng, hit_sub)      # 대타는 상대에게 걸리는 부가효과만 막고, 자신에게 걸리는 효과(불꽃의charge 등)는 그대로 적용
         if deferred and D.alive and st.sides[o].mon is D:                  # 열매 등 HP 조건 효과: 부가효과(힐블록 등)가 끝난 뒤에 판단
             self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=deferred[0], dmg=deferred[1], hp_before=deferred[2], foe_side=i)
+        if not hit_sub and key == "eeriespell" and D.alive and D.last_move:       # 으스스한주문: 맞은 상대가 마지막에 쓴 기술의 PP 를 3 줄인다
+            k_ = self._slot_of(D, D.last_move)
+            if k_ is not None and k_ < len(D.pp):
+                D.pp[k_] = max(0, D.pp[k_] - 3)
         if not hit_sub:
             if key == "knockoff" and D.item and norm(D.ability) != "stickyhold" and not (
                     self._own_stone(D)):
@@ -1767,12 +1777,16 @@ class Engine:
         if landed and not hit_sub and A.alive and D.alive and st.sides[i].mon is A and st.sides[o].mon is D:
             if norm(D.ability) == "pickpocket" and "contact" in mv["flags"] and not D.item and A.item and norm(A.ability) != "stickyhold"                     and not self._own_stone(A):                           # pickpocket: 접촉당한 뒤 빈손이면 공격자의 도구를 훔친다
                 D.item, A.item = A.item, ""
-            if norm(A.ability) == "magician" and not A.item and D.item and key != "fling" and norm(D.ability) != "stickyhold"                     and not self._own_stone(D):                           # magician: 기술을 맞힌 상대의 도구를 빼앗는다
-                A.item, D.item = D.item, ""
+                self.run_hook(st, o, D, "on_damage_taken_hp", rng, only="item")
         if A.alive and landed and st.sides[i].mon is A:
             self.run_hook(st, i, A, "on_damage_taken_hp", rng)
         if A.alive and landed and st.sides[i].mon is A:           # 생명의구슬/조개껍질방울은 낙오카드 등이 끝난 뒤
             self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="item")
+        if landed and not hit_sub and A.alive and D.alive and st.sides[i].mon is A and st.sides[o].mon is D:
+            if norm(A.ability) == "magician" and not A.item and D.item and key != "fling" and norm(D.ability) != "stickyhold" \
+                    and not self._own_stone(D):                           # magician: 기술을 맞힌 상대의 도구를 빼앗는다
+                A.item, D.item = D.item, ""
+                self.run_hook(st, i, A, "on_damage_taken_hp", rng, only="item")           # 훔친 열매는 조건이 맞으면 바로 먹는다
         if key in ("doubleshock", "burnup") and A.alive:
             lost = "Electric" if key == "doubleshock" else "Fire"
             if lost in A.types:
@@ -1901,13 +1915,13 @@ class Engine:
                              for r in self.data.ability_fx.get(norm(tgt.ability), []) if r["hook"] == "immunity")
                 if tgt.taunt == 0 and not immune:
                     tgt.taunt = 3 + (1 if tgt.active_turns and tgt.moved else 0)
-                    self._mental_herb(tgt)
+                    self._mental_herb(st, tgt)
             elif code == "throatchop":
                 tgt.throat = tgt.throat or 2          # 이미 걸려 있으면 갱신되지 않는다
             elif code == "healblock":
                 if not tgt.healblock:                                # 이미 걸려 있으면 지속 시간을 갱신하지 않는다
                     tgt.healblock = 5 if e["trigger_type"] == "primary" else 2
-                    self._mental_herb(tgt)
+                    self._mental_herb(st, tgt)
             elif code == "destinybond":
                 tgt.vol.add("destinybond")
             elif code == "stockpile":
@@ -1944,9 +1958,12 @@ class Engine:
                 self._use_item(st, D)
         dmg = min(dmg, D.hp)
         self._say(st, f"  미래공격 {D.name} -{dmg}")
+        hp_before = D.hp
         self.hp_change(st, tgt_side, D, -dmg, mv["name"])
         if D.alive:
-            self.run_hook(st, tgt_side, D, "on_damage_taken_hp", rng)
+            self.run_hook(st, tgt_side, D, "on_hit_taken", rng, mv=mv, dmg=dmg, foe_side=1 - tgt_side)        # 스태미나 등 피격 반응
+            if D.alive:
+                self.run_hook(st, tgt_side, D, "on_damage_taken_hp", rng, mv=mv, dmg=dmg, hp_before=hp_before, foe_side=1 - tgt_side)
 
     def _magic_end(self, st):
         st.magic_room = 0
@@ -1957,7 +1974,7 @@ class Engine:
                         m_.item = m_.hid_item
                     m_.hid_item = ""
 
-    def _mental_herb(self, bm):
+    def _mental_herb(self, st, bm):
         """멘탈허브: 도발/앙코르/힐블록 등이 걸리면 곧바로 풀고 소모한다 (onUpdate)"""
         if bm.alive and norm(bm.item) == "mentalherb" and (bm.taunt or bm.encore or bm.healblock or bm.disabled):
             bm.taunt = bm.encore = bm.healblock = bm.disable_n = 0
@@ -2000,7 +2017,7 @@ class Engine:
                 A.last_move = norm(pick)                      # 잠꼬대로 쓴 난동부리기류는 다음 턴에도 그 기술로 잠긴다
             return
         if key == "copycat":                        # 전투 전체에서 직전에 쓰인 기술을 그대로 쓴다 (불러 쓸 수 없는 기술이면 실패)
-            lm = st.lastmove_any
+            lm = self._lm_prev
             if lm and lm in self.data.moves and "failcopycat" not in self.data.moves[lm]["flags"] and lm != "copycat":
                 self._say(st, f"  따라하기 -> {self.data.moves[lm]['name']}")
                 self._run_move(st, i, self.data.moves[lm], lm, self._acts, rng, self._policy)
@@ -2169,8 +2186,18 @@ class Engine:
                         if m_.item:
                             m_.hid_item, m_.item = m_.item, ""
             return
+        if key == "spite":                      # 원한: 상대가 마지막에 쓴 기술의 PP 를 4 줄인다 (PP 가 없으면 실패)
+            k_ = self._slot_of(D, D.last_move) if D.last_move else None
+            if D.alive and k_ is not None and k_ < len(D.pp) and D.pp[k_] > 0:
+                D.pp[k_] = max(0, D.pp[k_] - 4)
+            else:
+                self._sfail = True
+            return
         if key == "trickroom":
             st.trick_room = 0 if st.trick_room else 5
+            return
+        if key == "wonderroom":                 # 원더룸: 5턴 동안 모든 포켓몬의 방어/특방 수치가 서로 바뀐다 (능력 단계는 이름 그대로) -- 다시 쓰면 해제
+            st.wonder_room = 0 if st.wonder_room else 5
             return
         if key == "transform":
             if D.alive and not self._transform(st, A, D):
@@ -2190,7 +2217,7 @@ class Engine:
         if key == "disable":
             if D.alive and not D.disabled and D.last_move and D.last_move != "struggle":
                 D.disabled, D.disable_n = D.last_move, (5 if D.moved else 4)
-                self._mental_herb(D)
+                self._mental_herb(st, D)
             else:
                 self._sfail = True
             return
@@ -2199,7 +2226,7 @@ class Engine:
                     not self._pp_empty(D, D.last_move) and "failencore" not in self.data.moves[D.last_move]["flags"]:        # PP 가 0 인 기술(되살리기)에는 실패
                 D.encore = 4 if D.moved else 3                    # 이번 턴에 이미 움직인 상대는 1턴 더 (Showdown: willMove 가 아니면 duration++)
                 D.encore_move = D.last_move
-                self._mental_herb(D)
+                self._mental_herb(st, D)
             else:
                 self._sfail = True
             return
@@ -2519,6 +2546,8 @@ class Engine:
             st.magic_room -= 1
             if not st.magic_room:
                 self._magic_end(st)
+        if st.wonder_room:
+            st.wonder_room -= 1
         self._hp_berry_update(st, rng)
 
     # ───────────────────────── 편의 ─────────────────────────

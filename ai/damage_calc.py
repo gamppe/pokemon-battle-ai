@@ -96,6 +96,7 @@ class Field:
     weather: str | None = None   # rain / sun / sand / snow
     terrain: str | None = None   # electric / grassy / misty / psychic
     screens: tuple = ()          # 방어 쪽 진영: reflect / light_screen / aurora_veil
+    wonder: bool = False         # 원더룸: 방어/특방 수치 교환
 
 
 def attacker_weather(c, F):
@@ -496,6 +497,9 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
             elif p.get("by") == "terrain":
                 t = p["table"].get(F.terrain)
                 if t and grounded(c, A): mv["type"] = t
+            elif p.get("by") == "form":                       # 레이징불: 사용자의 폼에 따라 타입이 정해진다 (오라윌: Morpeko 모양)
+                t = next((v for k_, v in p["table"].items() if norm(k_) == norm(A.sid)), None)
+                if t: mv["type"] = t
             else:
                 c.note_unsupported(f"{mv['name']}: 타입 규칙 {p.get('by')}")
     # ── 분류 선택 (Shell Side Arm) ──
@@ -560,6 +564,13 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
     ak = ex.get("overrideOffensiveStat") or ("atk" if physical else "spa")
     dk = ex.get("overrideDefensiveStat") or ("def" if physical else "spd")
     off_mon = D if ex.get("overrideOffensivePokemon") == "target" else A
+    if F.wonder and ak in ("def", "spd"):                # 바디프레스 등: 원더룸에서는 반대쪽 능력 단계를 쓴다
+        ak = "spd" if ak == "def" else "def"
+
+    def stat_of(mon, k):                                 # 원더룸: 방어/특방 수치가 서로 바뀐다 (능력 단계는 이름 그대로)
+        if F.wonder and k in ("def", "spd"):
+            return mon.stats["spd" if k == "def" else "def"]
+        return mon.stats[k]
     ab, db = off_mon.boosts.get(ak, 0), D.boosts.get(dk, 0)
     if has_ability_code(c, D, "foe_stat_stages"):       # 천진(Unaware): 공격 쪽 능력 변화 무시
         ab = 0
@@ -576,7 +587,7 @@ def calc(data: GameData, a_spec: dict, d_spec: dict, move_name: str, field_: Fie
     def boosted(s, b):
         b = max(-6, min(6, b))
         return math.floor(s * table[b]) if b >= 0 else math.floor(s / table[-b])
-    atk, dfn = boosted(off_mon.stats[ak], ab), boosted(D.stats[dk], db)
+    atk, dfn = boosted(stat_of(off_mon, ak), ab), boosted(stat_of(D, dk), db)
     # 날씨의 방어 보정(모래바람 바위 특방, 눈 얼음 방어)은 연쇄 곱 이전에 직접 적용
     dcat = "physical" if dk == "def" else "special"
     acat = "physical" if ("atk" if physical else "spa") == "atk" else "special"
