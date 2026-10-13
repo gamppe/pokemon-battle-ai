@@ -31,12 +31,19 @@ SD_SIDE = {"reflect": "reflect", "light_screen": "lightscreen", "aurora_veil": "
 
 def make_scenarios(meta, data, n, turns, seed, only=None, switch=0.0):
     rng = random.Random(seed)
+    mega_pool = set(Engine(data).mega_map)
     pairs = []
     for sid in meta.top_species(60):
         for mk, p in meta.moves.get(sid, []):
             if p >= 0.1 and mk in data.moves and (not only or norm(only) == mk):
                 pairs.append((sid, mk))
     sc = []
+
+    def mega(team, a):
+        """메가스톤을 든 포켓몬이 있는 팀은 가끔 메가진화 + 기술 (엔진/Showdown 모두 가능한 때만 적용, 아니면 기본 행동으로 대체)"""
+        if a[0] == "m" and mega_pool and any(norm(m.get("item", "")) in mega_pool for m in team) and rng.random() < 0.35:
+            return ("M", a[1])
+        return a
     for k in range(n):
         sid, mk = rng.choice(pairs)
         t0 = meta.random_team(rng)
@@ -48,6 +55,7 @@ def make_scenarios(meta, data, n, turns, seed, only=None, switch=0.0):
             first = [("s", 1), ("m", rng.randrange(len(t1[0]["moves"])))]
         else:
             first = [("m", 0), ("m", rng.randrange(len(t1[0]["moves"])))]
+        first = [mega(t0, first[0]), mega(t1, first[1])]
         tl = [first]
         for _ in range(turns - 1):
             row = []
@@ -55,7 +63,7 @@ def make_scenarios(meta, data, n, turns, seed, only=None, switch=0.0):
                 if switch and rng.random() < switch:            # 교체 (그 시점에 불가능하면 양쪽 모두 기본 행동으로 대체된다)
                     row.append(("s", rng.choice([1, 2])))
                 else:
-                    row.append(("m", rng.randrange(len(lead_t[0]["moves"]))))
+                    row.append(mega(lead_t, ("m", rng.randrange(len(lead_t[0]["moves"])))))
             tl.append(row)
         sc.append(dict(id=f"s{k}", teams=[t0, t1], turns=tl, key=mk))
     return sc

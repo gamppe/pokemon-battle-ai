@@ -12,7 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 sys.path.insert(0, HERE)
 import verify_turns as vt
-from ai.gamedata import GameData, connect
+from ai.gamedata import GameData, connect, norm
 from ai.meta import Meta
 from ai.battle import Engine
 
@@ -62,6 +62,15 @@ def mk(sid, rng, ability=None, item=None, moves=None, must=()):
             ms.append(m)
     s["moves"] = ms[:4]
     return s
+
+
+MEGA_POOL = set(Engine(data).mega_map)
+
+
+def with_mega(rng, team, a):
+    if a[0] == "m" and any(norm(m.get("item", "")) in MEGA_POOL for m in team) and rng.random() < 0.35:
+        return ("M", a[1])
+    return a
 
 
 def pick_move(rng, spec, names):
@@ -204,7 +213,7 @@ for k in range(N):
             if t > 0 and rng.random() < SWITCH:
                 row.append(("s", rng.choice([1, 2])))
             else:
-                row.append(("m", pick_move(rng, team[0], pref)))
+                row.append(with_mega(rng, team, ("m", pick_move(rng, team[0], pref))))
         turns.append(row)
     scs.append(dict(id=f"s{k}", teams=[ta, tb], turns=turns, key=cat))
 

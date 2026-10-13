@@ -126,6 +126,7 @@ class Side:
     wish: list | None = None                          # [남은 턴, 회복량]
     heal_next: str | None = None                      # healingwish / lunardance
     future: dict | None = None                        # 미래예지 등 지연 공격 {left, src(BMon), key} -- 이 슬롯이 맞는 쪽에 저장
+    mega_used: bool = False                           # 메가진화는 플레이어당 한 번
 
     @property
     def mon(self):
@@ -161,6 +162,19 @@ class Engine:
             has_secondary=False, extra={}, priority=0, accuracy=None, crit_stage=0, always_crit=False, min_hits=1, max_hits=1,
             drain=0, heal=0, self_switch=False, force_switch=False, self_destruct=False, ohko=False, fixed_damage=None,
             target="randomNormal", effects=[]))
+        self.mega_map, self.mega_rev = {}, {}               # 메가스톤 -> {원래 종: 메가 종}, 메가 종 -> (원래 종, 메가스톤)
+        try:
+            import json as _json
+            import os as _os
+            raw = _json.load(open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "etl", "cache_sd_items.json"), encoding="utf-8"))
+            for ik, v in raw.items():
+                mp = {norm(b): norm(g) for b, g in (v.get("megaStone") or {}).items() if norm(b) in data.pokemon and norm(g) in data.pokemon}
+                if mp:
+                    self.mega_map[ik] = mp
+                    for b, g in mp.items():
+                        self.mega_rev[g] = (b, ik)
+        except Exception:
+            pass
         self._landed = False
         self._pending = []
         self._sfail = False
@@ -170,6 +184,48 @@ class Engine:
         self._dmg_cache = {}
         self.unsupported = {}
 
+    # ───────────────────────── 메가진화 ─────────────────────────
+    def base_ability(self, sid):
+        ab = self.data.pokemon[sid]["abilities"]
+        for k in sorted(k for k in ab if k != "hidden"):
+            return ab[k]
+        return ab.get("hidden", "")
+
+    def demega_spec(self, spec):
+        """메가 종으로 적힌 세트를 메가진화 전 종 + 기본 특성으로 바꾼다 (메가스톤이 맞고 원래 종 자료가 있을 때만)"""
+        info = self.mega_rev.get(norm(spec["sid"]))
+        if info and norm(spec.get("item", "")) == info[1]:
+            return dict(spec, sid=info[0], ability=self.base_ability(info[0]))
+        return spec
+
+    def mega_target(self, st, side):
+        """지금 필드의 포켓몬이 메가진화할 수 있으면 메가 종 키"""
+        S = st.sides[side]
+        bm = S.mon
+        if S.mega_used or bm.orig is not None or not bm.alive:
+            return None
+        return self.mega_map.get(norm(bm.item), {}).get(norm(bm.sid))
+
+    def _mega_evolve(self, st, i, rng):
+        S = st.sides[i]
+        bm = S.mon
+        mega = self.mega_target(st, i)
+        if not mega:
+            return
+        S.mega_used = True
+        bm.sid = mega
+        bm.types = list(self.data.pokemon[mega]["types"])
+        bm.ability = self.base_ability(mega)
+        bm.abil_orig = None
+        self._say(st, f"[{i}] {bm.name} 메가진화 -> {mega}")
+        self._run_switch_in(st, i, bm, rng, only="ability")       # 새 특성의 등장 효과 (가뭄, 위협 등)
+        self._forecast_sync(st)
+
+    def _own_stone(self, bm):
+        """자기 종의 메가스톤을 들고 있으면 뺏기거나 바꿔칠 수 없다 (메가진화 전 모습 포함)"""
+        mp = self.mega_map.get(norm(bm.item))
+        return bool(mp) and (norm(bm.sid) in mp or norm(bm.sid) in mp.values())
+
     # ───────────────────────── 상태 만들기 ─────────────────────────
     def new_state(self, team0, team1, log=False, rng=None):
         rng = rng or random.Random(0)
@@ -177,6 +233,7 @@ class Engine:
         for team in (team0, team1):
             mons = []
             for spec in team:
+                spec = self.demega_spec(spec)                       # 모든 배틀은 메가진화 전 모습으로 시작한다
                 m = make_mon(self.data, dict(spec, boosts={}, status=None, hp_frac=None))
                 mons.append(BMon(spec, m.maxhp, m.maxhp, m.name, list(m.types), sid=spec["sid"],
                                  item=spec.get("item", ""), ability=spec.get("ability", "")))
@@ -778,6 +835,12 @@ class Engine:
 
     # ───────────────────────── 선택지 ─────────────────────────
     def legal_actions(self, st, side):
+        acts = self._legal_base(st, side)
+        if self.mega_target(st, side):                       # 메가진화 + 기술 (플레이어당 한 번)
+            acts = acts + [("M", a[1]) for a in acts if a[0] == "m"]
+        return acts
+
+    def _legal_base(self, st, side):
         S = st.sides[side]
         bm = S.mon
         if bm.recharge:
@@ -844,6 +907,8 @@ class Engine:
         """한 턴 진행. acts = [행동0, 행동1], 행동 = ('m', 기술번호) | ('s', 교체번호) | ('r', 0)"""
         if st.winner is not None:
             return st
+        mega_side = [i for i in (0, 1) if acts[i][0] == "M"]
+        acts = [("m", a[1]) if a[0] == "M" else a for a in acts]
         self._rng, self._policy, self._acts = rng, switch_policy, acts
         st.turn += 1
         st.last_hit = [0, 0]
@@ -863,6 +928,9 @@ class Engine:
         sw = [i for i in (0, 1) if acts[i][0] == "s"]
         for i in sorted(sw, key=lambda i: ((1 if st.trick_room else -1) * self.speed_of(st, i), rng.random())):
             self._switch_in(st, i, rng, to=acts[i][1])
+        for i in sorted(mega_side, key=lambda i: ((1 if st.trick_room else -1) * self.speed_of(st, i), rng.random())):      # 교체 -> 메가진화 -> 기술
+            if st.sides[i].mon.alive and acts[i][0] == "m":
+                self._mega_evolve(st, i, rng)
         movers = []
         for i in (0, 1):
             if acts[i][0] in ("m", "r", "t"):
@@ -1487,7 +1555,7 @@ class Engine:
             deferred = (eff_mv, dmg, hp_before) if nhits == 1 else None
             self._on_hit(st, i, o, eff_mv, rng, dmg, hp_before, crit, defer=nhits == 1)
             if key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.ability) != "stickyhold" and not (
-                    any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
+                    self._own_stone(D)):
                 A.item, D.item = D.item, ""                       # 도둑질/탐내기: 접촉 반격(울퉁불퉁멧 등) 뒤, 열매 소비보다 먼저 도구를 빼앗는다
         if not landed:
             return
@@ -1510,7 +1578,7 @@ class Engine:
             self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=deferred[0], dmg=deferred[1], hp_before=deferred[2], foe_side=i)
         if not hit_sub:
             if key == "knockoff" and D.item and norm(D.ability) != "stickyhold" and not (
-                    any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(D.item), [])) and "mega" in D.sid):
+                    self._own_stone(D)):
                 D.item = ""
         if D.alive:
             if not hit_sub:
@@ -1987,7 +2055,7 @@ class Engine:
             return
         if key in ("trick", "switcheroo"):
             def locked(m):
-                return bool(m.item) and any(r["kind"] == "mega_stone" for r in self.data.item_fx.get(norm(m.item), [])) and "mega" in m.sid
+                return bool(m.item) and self._own_stone(m)
             if norm(D.ability) != "stickyhold" and (A.item or D.item) and not locked(A) and not locked(D) and D.sub == 0:
                 A.item, D.item = D.item, A.item
                 A.locked = D.locked = None                      # 아이템이 새로 들어오면 구애 고정 볼라타일은 사라진다 (같은 아이템끼리 바꿔도)
