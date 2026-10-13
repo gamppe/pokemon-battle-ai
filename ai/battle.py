@@ -953,14 +953,20 @@ class Engine:
             if not st.sides[i].mon.alive or acts[i][0] == "s":
                 continue
             self._later, self._starts = [m_[0] for m_ in movers[n + 1:]], starts
+            hp0 = [st.sides[0].mon.hp, st.sides[1].mon.hp]
+            mons0 = [st.sides[0].mon, st.sides[1].mon]
             self._do_action(st, i, acts[i], acts, rng, switch_policy)
             pend, self._pending = self._pending, []
             for fn in pend:
                 fn()
             self._check_winner(st)
+            self._emergency_exit(st, mons0, hp0, rng, switch_policy)
         if st.winner is None:
+            hp0 = [st.sides[0].mon.hp, st.sides[1].mon.hp]
+            mons0 = [st.sides[0].mon, st.sides[1].mon]
             self._end_of_turn(st, rng)
             self._check_winner(st)
+            self._emergency_exit(st, mons0, hp0, rng, switch_policy)
         for _ in range(6):      # 교체해 들어오자마자 해저드로 쓰러지면 바로 다음 포켓몬을 낸다
             self._check_winner(st)
             dead = [i for i in (0, 1) if st.winner is None and not st.sides[i].mon.alive and st.sides[i].alive_idx()]
@@ -984,6 +990,23 @@ class Engine:
         self._hp_berry_update(st, rng)
         self._forecast_sync(st)
         return st
+
+    def _emergency_exit(self, st, mons0, hp0, rng, switch_policy):
+        """비상탈출/도주경로: 행동(또는 턴 종료) 중 HP 가 절반 초과 -> 절반 이하로 떨어지면 바로 교체한다 (Showdown EmergencyExit 이벤트)"""
+        if st.winner is not None:
+            return
+        for i in (0, 1):
+            m = mons0[i]
+            if st.sides[i].mon is not m or not m.alive or norm(m.ability) not in ("emergencyexit", "wimpout"):
+                continue
+            if hp0[i] * 2 <= m.maxhp or m.hp * 2 > m.maxhp:
+                continue
+            if not [j for j in st.sides[i].alive_idx() if j != st.sides[i].active]:
+                continue
+            self._say(st, f"  {m.name} 비상탈출")
+            cand = [j for j in st.sides[i].alive_idx() if j != st.sides[i].active]
+            j = switch_policy(st, i) if switch_policy else cand[0]
+            self._switch_in(st, i, rng, to=j if j in cand else cand[0])
 
     def _replace(self, st, i, rng, switch_policy, defer=False):
         alive = st.sides[i].alive_idx()
