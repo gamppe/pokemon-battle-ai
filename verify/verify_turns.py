@@ -91,7 +91,7 @@ def summarize_ours(st):
     mons = []
     for side in st.sides:
         mons.append([dict(hp=m.hp, st=m.status or "", b={k: v for k, v in m.boosts.items() if v}, it=norm(m.item or m.hid_item), fnt=int(not m.alive),
-                          v=vols(m) if (m is side.mon and m.alive) else "")
+                          v=vols(m) if (m is side.mon and m.alive) else "", pp=list(m.pp))
                      for m in side.team])
     sc = []
     for side in st.sides:
@@ -129,6 +129,8 @@ def flatten(s):
             d[f"st:{side}:{i}"] = m["st"]
             d[f"it:{side}:{i}"] = m["it"]
             d[f"v:{side}:{i}"] = m.get("v", "")
+            for j, v in enumerate(m.get("pp", [])):
+                d[f"pp:{side}:{i}:{j}"] = v
             for k, v in m["b"].items():
                 d[f"b:{side}:{i}:{k}"] = v
         d[f"act:{side}"] = s["act"][side]

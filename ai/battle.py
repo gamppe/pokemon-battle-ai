@@ -92,6 +92,9 @@ class BMon:
     rampage: int = 0
     prev_move: str = ""
     throat: int = 0
+    pp: list = field(default_factory=list)          # 기술 칸별 남은 PP
+    maxpp: list = field(default_factory=list)
+    pp_orig: tuple | None = None                    # 변신 전 PP
     spent: set = field(default_factory=set)         # PP 1 짜리 기술(되살리기)을 이미 쓴 경우
     trap_src: tuple | None = None
     orig: tuple | None = None            # 변신 전 (spec, sid, types, ability)
@@ -184,6 +187,48 @@ class Engine:
         self._dmg_cache = {}
         self.unsupported = {}
 
+    # ───────────────────────── PP ─────────────────────────
+    NO_PP_BOOST = {"revivalblessing", "sketch", "struggle"}
+
+    def max_pp(self, name):
+        """챔피언스 PP: 기본 PP 를 20 으로 제한한 뒤 (pp/5+1)*4 (Showdown champions mod 의 calculatePP)"""
+        mv = self.data.moves.get(norm(name))
+        base = (mv or {}).get("pp", 5)
+        if norm(name) in self.NO_PP_BOOST:
+            return base
+        return int((min(base, 20) / 5 + 1) * 4)
+
+    def _pp_empty(self, bm, move_key):
+        k = self._slot_of(bm, move_key)
+        return k is not None and k < len(bm.pp) and bm.pp[k] <= 0
+
+    def _slot_of(self, bm, move_key):
+        for k, m in enumerate(bm.spec["moves"]):
+            if norm(m) == move_key:
+                return k
+        return None
+
+    def _deduct_pp(self, st, i, bm, k, mv, rng):
+        """기술을 쓸 때 PP 1 감소 + 상대 압박(Pressure)이면 1 더 감소"""
+        if k is None or k >= len(bm.pp):
+            return
+        extra = 0
+        o = st.sides[1 - i].mon
+        if o.alive and norm(o.ability) == "pressure" and mv["target"] not in ("self", "adjacentAlly", "allySide", "allyTeam", "adjacentAllyOrSelf", "allies"):
+            extra = 1
+        bm.pp[k] = max(0, bm.pp[k] - 1 - extra)
+
+    def _leppa_update(self, st, rng):
+        """PP 가 0 인 기술이 있으면 레프파열매를 먹어 PP 를 10 회복한다 (Showdown onUpdate/onEat)"""
+        for k in (0, 1):
+            m = st.sides[k].mon
+            if m.alive and norm(m.item) == "leppaberry" and any(p <= 0 for p in m.pp) and not self._unnerved(st, m):
+                slot = next((j for j, p in enumerate(m.pp) if p <= 0), None)
+                if slot is None:
+                    continue
+                m.pp[slot] = min(m.pp[slot] + 10, m.maxpp[slot])
+                self._consume(st, m)
+
     # ───────────────────────── 메가진화 ─────────────────────────
     def base_ability(self, sid):
         ab = self.data.pokemon[sid]["abilities"]
@@ -235,8 +280,11 @@ class Engine:
             for spec in team:
                 spec = self.demega_spec(spec)                       # 모든 배틀은 메가진화 전 모습으로 시작한다
                 m = make_mon(self.data, dict(spec, boosts={}, status=None, hp_frac=None))
-                mons.append(BMon(spec, m.maxhp, m.maxhp, m.name, list(m.types), sid=spec["sid"],
-                                 item=spec.get("item", ""), ability=spec.get("ability", "")))
+                bm_ = BMon(spec, m.maxhp, m.maxhp, m.name, list(m.types), sid=spec["sid"],
+                           item=spec.get("item", ""), ability=spec.get("ability", ""))
+                bm_.pp = [self.max_pp(x) for x in spec["moves"]]
+                bm_.maxpp = list(bm_.pp)
+                mons.append(bm_)
             sides.append(Side(mons))
         st = State(sides, log=[] if log else None)
         for i in sorted((0, 1), key=lambda i: (-self.speed_of(st, i), rng.random())):
@@ -622,6 +670,9 @@ class Engine:
         bm.sid, bm.types, bm.ability = tgt.sid, list(tgt.types), "" if norm(tgt.ability) in NO_TRANSFORM else tgt.ability
         bm.boosts = dict(tgt.boosts)
         bm.locked = None
+        bm.pp_orig = (bm.pp, bm.maxpp)
+        bm.pp = [min(5, self.max_pp(x)) for x in bm.spec["moves"]]
+        bm.maxpp = list(bm.pp)
         self._say(st, f"  {bm.name} → {tgt.name} 로 변신")
         return True
 
@@ -711,6 +762,9 @@ class Engine:
             if old.orig:
                 old.spec, old.sid, old.types, old.ability = old.orig
                 old.orig = None
+                if old.pp_orig:
+                    old.pp, old.maxpp = old.pp_orig
+                    old.pp_orig = None
             for src, r in self.rows(old, "switch_out"):
                 if r["kind"] == "heal_frac" and old.alive:
                     old.hp = min(old.maxhp, old.hp + math.floor(old.maxhp * _frac(r["value"]) + 1e-9))
@@ -847,7 +901,7 @@ class Engine:
             return [("r", 0)]
         moves = bm.spec["moves"]
         acts = []
-        no_revive = {k for k, m in enumerate(moves) if norm(m) in bm.spent}
+        no_revive = {k for k in range(len(moves)) if k < len(bm.pp) and bm.pp[k] <= 0}
         no_sound = {k for k, m in enumerate(moves) if bm.throat and "sound" in self.data.moves[norm(m)]["flags"]}
         if bm.moves_made >= 1:           # 등장 직후 한 번만 쓸 수 있는 기술(猫だまし 등)은 선택 불가
             first_only = {k for k, m in enumerate(moves) if any(
@@ -988,6 +1042,7 @@ class Engine:
         self._check_winner(st)
         self._update_berries(st, rng)
         self._hp_berry_update(st, rng)
+        self._leppa_update(st, rng)
         self._forecast_sync(st)
         return st
 
@@ -1127,6 +1182,9 @@ class Engine:
         if bm.healblock and "heal" in mv["flags"]:
             self._say(st, "  힐블록으로 사용 불가")
             return
+        locked_on = bool(bm.charge == norm(mname) or (bm.rampage and bm.last_move))      # 두 번째 턴(충전 공격)/난동부리기 잠금에서는 PP 가 줄지 않는다
+        if act[0] != "t" and not locked_on:
+            self._deduct_pp(st, i, bm, act[1] if mname == bm.spec["moves"][act[1]] else self._slot_of(bm, norm(mname)), mv, rng)
         # 스탠스체인지: 기술을 실제로 쓰게 된 뒤에 바뀐다 (풀죽음/수면 등으로 움직이지 못하면 폼 그대로). 공격하면 블레이드폼, 킹실드는 실드폼
         if norm(bm.ability) == "stancechange" and bm.sid in ("aegislash", "aegislashblade") and not bm.orig:
             if norm(mv["name"]) == "kingsshield":
@@ -1146,11 +1204,6 @@ class Engine:
         bm.moved = True
         bm.prev_move = bm.last_move
         bm.last_move = norm(mname)             # 앙코르도 마지막 기술로 기록된다 (그 직후의 앙코르는 대상의 마지막 기술이 앙코르라서 실패)
-        if norm(mname) == "revivalblessing":
-            if norm(bm.item) == "leppaberry":                      # PP 1 이 0 이 되면 Leppa 열매가 PP 를 회복한다 (이후 다시 쓸 수 있음)
-                bm.item = ""
-            else:
-                bm.spent.add("revivalblessing")
         chg = next((r["params"] for r in mv["rules"] if r["type"] == "charge_move"), None)
         if chg is not None:
             if bm.charge == norm(mname):                      # 두 번째 턴: 공격
@@ -1173,6 +1226,7 @@ class Engine:
         st.lastmove_any = norm(mname)                       # Copycat 용: 전투 전체에서 마지막으로 쓰인 기술
         self._update_berries(st, rng)
         self._hp_berry_update(st, rng)
+        self._leppa_update(st, rng)
         self._forecast_sync(st)
         for S_ in st.sides:                                 # 구애 아이템을 잃으면(트릭 등) 기술 고정도 풀린다 (choicelock 볼라타일은 아이템이 바뀌면 사라짐)
             if S_.mon.locked and norm(S_.mon.item) not in CHOICE:
@@ -2061,7 +2115,7 @@ class Engine:
             return
         if key == "encore":
             if (D.sub == 0 or "bypasssub" in mv["flags"]) and not D.encore and D.last_move and D.last_move not in ("encore",) and \
-                    D.last_move not in D.spent and "failencore" not in self.data.moves[D.last_move]["flags"]:        # PP 가 0 인 기술(되살리기)에는 실패
+                    not self._pp_empty(D, D.last_move) and "failencore" not in self.data.moves[D.last_move]["flags"]:        # PP 가 0 인 기술(되살리기)에는 실패
                 D.encore = 4 if D.moved else 3                    # 이번 턴에 이미 움직인 상대는 1턴 더 (Showdown: willMove 가 아니면 duration++)
                 D.encore_move = D.last_move
                 self._mental_herb(D)
