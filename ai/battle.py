@@ -606,7 +606,7 @@ class Engine:
                 self._unsup("hook-volatile:" + str(code))
         elif kind == "special":
             if code == "pop_balloon":
-                pass
+                applied = False                              # 풍선은 _on_hit / _damage_move 에서 따로 터뜨린다
             elif code == "set_toxic_spikes":
                 t = st.sides[o]
                 t.hazards["toxicspikes"] = min(int(row["cond"].get("max_layers", 2)), t.hazards.get("toxicspikes", 0) + int(val or 1))
@@ -786,6 +786,13 @@ class Engine:
                     bm.vol.discard("confusion")
                     self._use_item(st, bm)
                     break
+
+    def _berry_now(self, st, side, bm, rng):
+        """방금 얻은(되살아난/빼앗은/주운) 열매는 조건이 맞으면 곧바로 먹는다 (HP 조건 + 상태이상 치료)"""
+        if bm.alive and bm.item:
+            self.run_hook(st, side, bm, "on_damage_taken_hp", rng, only="item")
+            if bm.alive and bm.item and bm.status:
+                self._status_item_cure(st, bm, bm.status)
 
     def _opportunist_flush(self, st):
         for k in (0, 1):
@@ -1921,7 +1928,7 @@ class Engine:
         if landed and not hit_sub and A.alive and D.alive and st.sides[i].mon is A and st.sides[o].mon is D:
             if norm(D.ability) == "pickpocket" and "contact" in mv["flags"] and not D.item and A.item and norm(A.ability) != "stickyhold"                     and not self._own_stone(A):                           # pickpocket: 접촉당한 뒤 빈손이면 공격자의 도구를 훔친다
                 D.item, A.item = A.item, ""
-                self.run_hook(st, o, D, "on_damage_taken_hp", rng, only="item")
+                self._berry_now(st, o, D, rng)
         if A.alive and landed and st.sides[i].mon is A:
             self.run_hook(st, i, A, "on_damage_taken_hp", rng)
         if A.alive and landed and st.sides[i].mon is A:           # 생명의구슬/조개껍질방울은 낙오카드 등이 끝난 뒤
@@ -1935,7 +1942,7 @@ class Engine:
             if norm(A.ability) == "magician" and not A.item and D.item and key != "fling" and norm(D.ability) != "stickyhold" \
                     and not self._own_stone(D):                           # magician: 기술을 맞힌 상대의 도구를 빼앗는다
                 A.item, D.item = D.item, ""
-                self.run_hook(st, i, A, "on_damage_taken_hp", rng, only="item")           # 훔친 열매는 조건이 맞으면 바로 먹는다
+                self._berry_now(st, i, A, rng)                                            # 훔친 열매는 조건이 맞으면 바로 먹는다
         if key in ("doubleshock", "burnup") and A.alive:
             lost = "Electric" if key == "doubleshock" else "Fire"
             if lost in A.types:
@@ -2018,7 +2025,11 @@ class Engine:
             D.charged = 2
         if "beakblast" in D.vol and "contact" in mv["flags"] and st.sides[i].mon.alive:      # 부리캐논 대기 중 접촉 -> 공격자 화상 (타마다)
             self.try_status(st, i, st.sides[i].mon, "brn", rng, src_side=o, ignore_sub=True)
-        self.run_hook(st, o, D, "on_hit_taken", rng, mv=mv, dmg=dmg, foe_side=i)
+        self._defer_balloon = defer                         # 단일 타격의 풍선은 부가효과 뒤에 터진다
+        try:
+            self.run_hook(st, o, D, "on_hit_taken", rng, mv=mv, dmg=dmg, foe_side=i)
+        finally:
+            self._defer_balloon = False
         if D.alive:
             if not defer:
                 self.run_hook(st, o, D, "on_damage_taken_hp", rng, mv=mv, dmg=dmg, hp_before=hp_before, foe_side=i)
@@ -2956,7 +2967,7 @@ class Engine:
             if bm.alive and norm(bm.ability) == "harvest" and not bm.item and norm(bm.last_item).endswith("berry"):      # 수확: 먹은 열매가 (맑음이면 확실히, 아니면 50%) 되살아난다
                 if self.wx(st) == "sun" or rng.random() < 0.5:
                     bm.item, bm.last_item = bm.last_item, ""
-                    self.run_hook(st, i, bm, "on_damage_taken_hp", rng, only="item")           # 되살아난 열매는 조건이 맞으면 바로 먹는다
+                    self._berry_now(st, i, bm, rng)                                            # 되살아난 열매는 조건이 맞으면 바로 먹는다
             ab_ = norm(bm.ability)
             if bm.alive and ab_ == "cudchew" and bm.cud_berry:                               # 되새김질: 먹은 지 두 번째 턴 끝에 다시 먹는다
                 bm.cud_n -= 1
@@ -2967,7 +2978,7 @@ class Engine:
                 foe_ = st.sides[1 - i].mon
                 if foe_.alive and foe_.last_item and foe_.used_turn == st.turn:
                     bm.item, foe_.last_item = foe_.last_item, ""
-                    self.run_hook(st, i, bm, "on_damage_taken_hp", rng, only="item")
+                    self._berry_now(st, i, bm, rng)
             if bm.alive and ab_ == "moody":                                                   # 변덕쟁이: 무작위 능력 +2, 다른 능력 -1 (명중/회피 제외)
                 stats_ = ["atk", "def", "spa", "spd", "spe"]
                 up_ = [s_ for s_ in stats_ if bm.boosts.get(s_, 0) < 6]
