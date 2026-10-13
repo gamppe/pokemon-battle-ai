@@ -94,6 +94,7 @@ class BMon:
     healblock: int = 0
     yawn: int = 0
     rampage: int = 0
+    uproar: int = 0                           # 소란피기 남은 턴 (걸려 있는 동안 기술이 고정되고 아무도 잠들지 않는다)
     prev_move: str = ""
     throat: int = 0
     pp: list = field(default_factory=list)          # 기술 칸별 남은 PP
@@ -170,6 +171,13 @@ class Engine:
             has_secondary=False, extra={}, priority=0, accuracy=None, crit_stage=0, always_crit=False, min_hits=1, max_hits=1,
             drain=0, heal=0, self_switch=False, force_switch=False, self_destruct=False, ohko=False, fixed_damage=None,
             target="randomNormal", effects=[]))
+        self.abil_flags = {}                                 # 특성 플래그 (cantsuppress / failroleplay / noentrain ...)
+        try:
+            import json as _json
+            import os as _os
+            self.abil_flags = _json.load(open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "etl", "cache_sd_ability_flags.json"), encoding="utf-8"))
+        except Exception:
+            pass
         self.mega_map, self.mega_rev = {}, {}               # 메가스톤 -> {원래 종: 메가 종}, 메가 종 -> (원래 종, 메가스톤)
         try:
             import json as _json
@@ -624,6 +632,7 @@ class Engine:
     # ───────────────────────── 능력 단계 / 상태이상 ─────────────────────────
     def change_boost(self, st, side, bm, stat, n, src_side=None):
         """src_side 가 있으면 상대에게서 온 변화 (방어 특성/반격 특성 적용)"""
+        stat = {"eva": "evasion", "acc": "accuracy"}.get(stat, stat)
         ab = norm(bm.ability)
         from_foe = src_side is not None
         broken = from_foe and src_side != side and norm(st.sides[src_side].mon.ability) in MOLD_BREAKERS and ab in self.data.breakable      # 틀깨기는 방어 특성을 무시
@@ -689,6 +698,8 @@ class Engine:
         elif STATUS_IMMUNE_TYPE.get(code) in bm.types:
             return False
         if code == "frz" and self.wx(st) == "sun":
+            return False
+        if code == "slp" and any(S_.mon.alive and S_.mon.uproar for S_ in st.sides):        # 소란 중에는 아무도 잠들지 않는다
             return False
         if code == "slp" and st.terrain == "electric" and self._grounded(bm):
             return False
@@ -835,7 +846,7 @@ class Engine:
             S.active = to
         bm = S.mon
         bm.active_turns, bm.moves_made, bm.moved, bm.used = 0, 0, False, set()
-        bm.taunt = bm.stockpile = bm.yawn = bm.encore = bm.healblock = bm.rampage = bm.throat = bm.met_n = bm.disable_n = 0
+        bm.taunt = bm.stockpile = bm.yawn = bm.encore = bm.healblock = bm.rampage = bm.uproar = bm.throat = bm.met_n = bm.disable_n = 0
         bm.encore_move = ""
         bm.met_last = bm.disabled = ""
         bm.db_pending = False
@@ -902,6 +913,12 @@ class Engine:
                 if r["label"].endswith("Intimidate"):
                     if any(r2["hook"] == "immunity" and r2["code"] == "ability:intimidate" for r2 in self.data.ability_fx.get(norm(foe.ability), [])):
                         continue
+                if r["label"].endswith("Intimidate"):
+                    gd = [r2 for src2, r2 in self.rows(foe, "immunity") if r2["cond"].get("intimidated") and r2["kind"] == "stat_stage"]
+                    if gd:                                     # 번견(Guard Dog): 위협을 받으면 떨어지는 대신 공격이 오른다
+                        for r2 in gd:
+                            self.change_boost(st, 1 - side, foe, r2["code"], int(r2["value"]))
+                        continue
                 self.change_boost(st, 1 - side, foe, r["code"], int(r["value"]), src_side=side)
                 if r["label"].endswith("Intimidate") and foe.alive:
                     for src2, r2 in self.rows(foe, "immunity") + self.rows(foe, "on_hit_taken"):
@@ -951,9 +968,14 @@ class Engine:
     # ───────────────────────── 선택지 ─────────────────────────
     def legal_actions(self, st, side):
         acts = self._legal_base(st, side)
-        if self.mega_target(st, side):                       # 메가진화 + 기술 (플레이어당 한 번)
+        if self.mega_target(st, side) and not self._move_locked(st.sides[side].mon):                       # 메가진화 + 기술 (플레이어당 한 번)
             acts = acts + [("M", a[1]) for a in acts if a[0] == "m"]
         return acts
+
+    @staticmethod
+    def _move_locked(bm):
+        """충전/난동부리기 등 기술이 강제된 턴에는 메가진화를 선택할 수 없다 (Showdown lockedmove)"""
+        return bool(bm.charge or bm.semi or bm.rampage or bm.uproar or bm.recharge)
 
     def _legal_base(self, st, side):
         S = st.sides[side]
@@ -973,7 +995,7 @@ class Engine:
         first_only |= no_revive | no_sound
         if bm.charge:
             return [("m", next(k for k, m in enumerate(moves) if norm(m) == bm.charge))]       # 두 턴 기술의 충전 중에는 교체 불가 (Showdown 에서 확인)
-        if bm.rampage and bm.last_move:
+        if (bm.rampage or bm.uproar) and bm.last_move:
             ks = [k for k, m in enumerate(moves) if norm(m) == bm.last_move]
             if ks:
                 return [("m", ks[0])]
@@ -1022,7 +1044,7 @@ class Engine:
         """한 턴 진행. acts = [행동0, 행동1], 행동 = ('m', 기술번호) | ('s', 교체번호) | ('r', 0)"""
         if st.winner is not None:
             return st
-        mega_side = [i for i in (0, 1) if acts[i][0] == "M"]
+        mega_side = [i for i in (0, 1) if acts[i][0] == "M" and not self._move_locked(st.sides[i].mon)]
         acts = [("m", a[1]) if a[0] == "M" else a for a in acts]
         self._rng, self._policy, self._acts = rng, switch_policy, acts
         st.turn += 1
@@ -1209,7 +1231,7 @@ class Engine:
             bm.recharge = False
             return
         mname = "struggle" if act[0] == "t" else bm.spec["moves"][act[1]]
-        if bm.rampage and bm.last_move:
+        if (bm.rampage or bm.uproar) and bm.last_move:
             mname = next((m for m in bm.spec["moves"] if norm(m) == bm.last_move), mname)
         if bm.encore and bm.encore_move and act[0] != "t" and norm(mname) != bm.encore_move:
             mname = next((m for m in bm.spec["moves"] if norm(m) == bm.encore_move), mname)
@@ -1250,7 +1272,7 @@ class Engine:
         if bm.healblock and "heal" in mv["flags"]:
             self._say(st, "  힐블록으로 사용 불가")
             return
-        locked_on = bool(bm.charge == norm(mname) or (bm.rampage and bm.last_move))      # 두 번째 턴(충전 공격)/난동부리기 잠금에서는 PP 가 줄지 않는다
+        locked_on = bool(bm.charge == norm(mname) or ((bm.rampage or bm.uproar) and bm.last_move))      # 두 번째 턴(충전 공격)/난동부리기 잠금에서는 PP 가 줄지 않는다
         if act[0] != "t" and not locked_on:
             self._deduct_pp(st, i, bm, act[1] if mname == bm.spec["moves"][act[1]] else self._slot_of(bm, norm(mname)), mv, rng)
         # 스탠스체인지: 기술을 실제로 쓰게 된 뒤에 바뀐다 (풀죽음/수면 등으로 움직이지 못하면 폼 그대로). 공격하면 블레이드폼, 킹실드는 실드폼
@@ -1383,9 +1405,15 @@ class Engine:
                 if r["type"] == "self_cost" and r["params"].get("hp_frac") and mv["category"] != "status" and bm.alive:
                     self.hp_change(st, i, bm, -math.floor(bm.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
             return
+        if norm(mv["name"]) == "uproar":                    # 소란피기: 쓰는 순간 양쪽의 잠듦이 깨어난다
+            for S_ in st.sides:
+                if S_.mon.status == "slp":
+                    S_.mon.status = None
         self._damage_move(st, i, o, mv, rng, switch_policy)
         if self._landed:
             bm.last_failed = False
+        if norm(mv["name"]) == "uproar" and self._landed and not bm.uproar:
+            bm.uproar = 3
         if any(e["code"] == "lockedmove" for e in mv["effects"]) and bm.rampage > 1 and not self._landed:
             bm.rampage = 0                      # 잠긴 채로 쓴 기술이 실패하면(면역 등) 잠금만 풀린다. 혼란은 남은 지속이 1 이하일 때만
         elif any(e["code"] == "lockedmove" for e in mv["effects"]) and (bm.rampage or self._landed):
@@ -2152,6 +2180,41 @@ class Engine:
                 m.status = None
                 m.faint_logged = False
             return
+        if key in ("roleplay", "entrainment", "worryseed", "simplebeam", "gastroacid"):      # 특성을 복사하거나 바꾸거나 막는 기술
+            fl_ = lambda bm_, f_: f_ in self.abil_flags.get(norm(bm_.ability), [])
+            ok = D.alive and (key == "roleplay" or D.sub == 0)
+            new = {"worryseed": "Insomnia", "simplebeam": "Simple"}.get(key)
+            if ok and key == "roleplay":
+                ok = norm(D.ability) != norm(A.ability) and not fl_(D, "failroleplay") and not fl_(A, "cantsuppress")
+                tgt_, recv, new = A, i, D.ability
+            elif ok and key == "entrainment":
+                ok = norm(D.ability) != norm(A.ability) and not fl_(D, "cantsuppress") and not fl_(A, "noentrain")
+                tgt_, recv, new = D, o, A.ability
+            elif ok and key in ("worryseed", "simplebeam"):
+                ok = not fl_(D, "cantsuppress") and norm(D.ability) not in (norm(new), "truant")
+                tgt_, recv = D, o
+            elif ok:                                  # 위액: 특성 효과를 끈다 (교체하면 돌아온다)
+                ok = not fl_(D, "cantsuppress") and D.ability
+                tgt_, recv, new = D, o, ""
+            if ok:
+                tgt_.abil_orig = tgt_.abil_orig or tgt_.ability
+                tgt_.ability = new
+                if new and tgt_.alive:
+                    self._run_switch_in(st, recv, tgt_, rng, only="ability")
+                    self._forecast_sync(st)
+            else:
+                self._sfail = True
+            return
+        if key == "tidyup":                     # 대청소: 양쪽의 설치기와 대타를 없애고 공격/속도 +1
+            for S_ in st.sides:
+                for h_ in ("spikes", "toxicspikes", "stealthrock", "stickyweb"):
+                    S_.hazards.pop(h_, None)
+                if S_.mon.sub:
+                    S_.mon.sub = 0
+                    S_.mon.vol.discard("substitute")
+            self.change_boost(st, i, A, "atk", 1)
+            self.change_boost(st, i, A, "spe", 1)
+            return
         if key == "skillswap":
             if D.sub == 0 or "bypasssub" in mv["flags"]:
                 if norm(A.ability) not in NO_SWAP and norm(D.ability) not in NO_SWAP:
@@ -2339,7 +2402,7 @@ class Engine:
             self.hp_change(st, i, A, amount, "회복")
         for r in mv["rules"]:
             if r["type"] == "extra_effect" and r["params"].get("effect") == "full_heal_and_sleep":
-                sleepless = norm(A.ability) in ("insomnia", "vitalspirit", "sweetveil") or (
+                sleepless = norm(A.ability) in ("insomnia", "vitalspirit", "sweetveil") or any(S_.mon.alive and S_.mon.uproar for S_ in st.sides) or (
                     st.terrain in ("electric", "misty") and self._grounded(A))
                 if A.status != "slp" and A.hp < A.maxhp and not sleepless:
                     A.hp, A.status, A.sleep = A.maxhp, "slp", 3
@@ -2482,6 +2545,8 @@ class Engine:
                 bm.yawn -= 1
                 if bm.yawn == 0 and bm.alive:
                     self.try_status(st, i, bm, "slp", rng)
+            if bm.uproar:
+                bm.uproar -= 1
             if bm.alive and bm.status == "slp":
                 bm.rampage = 0                              # 잠든 채 턴이 끝나면 난동부리기 잠금이 (혼란 없이) 풀린다 (lockedmove onResidual)
             if bm.alive and "curse" in bm.vol and norm(bm.ability) != "magicguard":
