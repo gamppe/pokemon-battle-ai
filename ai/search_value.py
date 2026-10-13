@@ -60,6 +60,25 @@ def payoff_matrix_value(eng, ev, st, me, my_acts, opp_acts, samples, rng, pol):
     return M
 
 
+def _sample_world(eng, st, opp, models, rng):
+    sets = {idx: m.sample_set(rng) for idx, m in models.items()}
+    for idx, spec in sets.items():
+        bm = st.sides[opp].team[idx]
+        for mv in bm.spec["moves"]:
+            if len(spec["moves"]) >= 4:
+                break
+            if mv not in spec["moves"]:
+                spec["moves"].append(mv)
+        for key in [norm(x) for x in (bm.charge, bm.locked, bm.last_move if (bm.rampage or bm.encore) else None) if x]:
+            if key not in [norm(m) for m in spec["moves"]]:
+                if len(spec["moves"]) >= 4:
+                    spec["moves"][-1] = key
+                else:
+                    spec["moves"].append(key)
+    world = resample_opponent(eng, st, opp, sets)
+    return world
+
+
 def nash_value_hidden(eng, ev, st, me, models, worlds=4, samples=4, seed=0, pol=None, my_max_sw=2, opp_max_sw=1):
     """숨은 정보 + 가치망 1턴 탐색. 반환 {행동: 확률}"""
     from .policy import make_switch_policy
@@ -69,21 +88,7 @@ def nash_value_hidden(eng, ev, st, me, models, worlds=4, samples=4, seed=0, pol=
     my_acts = candidate_actions(eng, st, me, my_max_sw)
     total = np.zeros(len(my_acts))
     for _ in range(worlds):
-        sets = {idx: m.sample_set(rng) for idx, m in models.items()}
-        for idx, spec in sets.items():
-            bm = st.sides[opp].team[idx]
-            for mv in bm.spec["moves"]:
-                if len(spec["moves"]) >= 4:
-                    break
-                if mv not in spec["moves"]:
-                    spec["moves"].append(mv)
-            for key in [norm(x) for x in (bm.charge, bm.locked, bm.last_move if (bm.rampage or bm.encore) else None) if x]:
-                if key not in [norm(m) for m in spec["moves"]]:
-                    if len(spec["moves"]) >= 4:
-                        spec["moves"][-1] = key
-                    else:
-                        spec["moves"].append(key)
-        world = resample_opponent(eng, st, opp, sets)
+        world = _sample_world(eng, st, opp, models, rng)
         opp_acts = candidate_actions(eng, world, opp, opp_max_sw)
         M = payoff_matrix_value(eng, ev, world, me, my_acts, opp_acts, samples, rng, pol)
         x, _ = solve_zero_sum(M)

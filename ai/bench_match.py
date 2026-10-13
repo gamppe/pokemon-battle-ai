@@ -15,6 +15,7 @@ from .observe import ObsEngine
 from .policy import greedy_action, make_switch_policy
 from .search import nash_hidden, pick
 from .search_value import ValueEvaluator, nash_value_hidden
+from .search_deep import nash_deep_hidden
 from .teams import MetaTeams, ReplayTeams
 
 _G = {}
@@ -54,6 +55,10 @@ class Player:
         if self.kind == "nashv":          # 가치망 1턴 탐색 + 내시 균형
             strat = nash_value_hidden(eng, _G["ev"], st, me, alive, worlds=w, samples=r, seed=self.rng.randrange(10 ** 9))
             return pick(strat, self.rng, self.params.get("pick", "sample"))
+        if self.kind == "nashd":          # 가치망 다턴 탐색 (후회 기준 가지치기)
+            strat = nash_deep_hidden(eng, _G["ev"], st, me, alive, depth=self.params["depth"], worlds=w, samples=r,
+                                     kmax=self.params["kmax"], delta=self.params["delta"], seed=self.rng.randrange(10 ** 9))
+            return pick(strat, self.rng, "max")
         if self.kind == "nash":
             strat = nash_hidden(eng, st, me, alive, worlds=w, rollouts=r, seed=self.rng.randrange(10 ** 9))
             return pick(strat, self.rng, self.params.get("pick", "sample"))
@@ -117,12 +122,15 @@ def main():
     ap.add_argument("--worlds", type=int, default=3)
     ap.add_argument("--rollouts", type=int, default=4)
     ap.add_argument("--pick", default="sample", choices=["sample", "max"])
+    ap.add_argument("--depth", type=int, default=3)
+    ap.add_argument("--kmax", type=int, default=3)
+    ap.add_argument("--delta", type=float, default=0.08)
     ap.add_argument("--snap", type=int, default=33)
     ap.add_argument("--teams", default="meta", choices=["meta", "replay"])
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--ckpt", default="data/value_v2/value_net.pt", help="nashv 에이전트가 쓸 가치망")
     a = ap.parse_args()
-    params = dict(worlds=a.worlds, rollouts=a.rollouts, pick=a.pick)
+    params = dict(worlds=a.worlds, rollouts=a.rollouts, pick=a.pick, depth=a.depth, kmax=a.kmax, delta=a.delta)
     jobs = []
     for g in range(a.games):
         jobs.append(((a.a, a.b), 2000 + g, params))      # A 가 0번 자리
