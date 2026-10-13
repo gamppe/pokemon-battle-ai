@@ -1670,7 +1670,7 @@ class Engine:
         A_ = st.sides[i].mon
         if norm(D.ability) == "cursedbody" and A_.alive and not A_.disabled and norm(mv["name"]) != "struggle" \
                 and norm(A_.ability) not in MOLD_BREAKERS and rng.random() < 0.3:        # 저주받은바디: 맞으면 30% 로 공격한 기술을 봉인
-            A_.disabled, A_.disable_n = norm(mv["name"]), 5
+            A_.disabled, A_.disable_n = norm(mv["name"]), 4
         if norm(D.ability) in ("electromorphosis", "windpower"):      # 맞으면 충전 상태 (onDamagingHit -> addVolatile('charge'))
             D.charged = 2
         if "beakblast" in D.vol and "contact" in mv["flags"] and st.sides[i].mon.alive:      # 부리캐논 대기 중 접촉 -> 공격자 화상 (타마다)
