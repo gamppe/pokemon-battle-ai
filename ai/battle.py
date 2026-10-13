@@ -594,7 +594,9 @@ class Engine:
             if bm.status and (code in ("any", None) or "any" in code.split("|") or bm.status in code.split("|") or (bm.status == "tox" and "psn" in code.split("|"))):
                 bm.status = None
         elif kind == "volatile":
-            if code == "flinch" and tm.alive and not tm.moved and norm(tm.ability) != "innerfocus":
+            if code == "flinch" and src.startswith("item:") and getattr(self, "_no_flinch_item", False):
+                applied = False                              # 풀죽음 도구는 타마다 따로 굴린다 (아래 타격 반복문)
+            elif code == "flinch" and tm.alive and not tm.moved and norm(tm.ability) not in ("innerfocus", "shielddust"):
                 tm.vol.add("flinch")
             elif code != "flinch":
                 applied = False
@@ -1817,6 +1819,9 @@ class Engine:
                 A.item = own
             if key == "fling":
                 self._fling_throw(st, i, o, A, D, rng, hit_sub)
+            if A.item and "embargo" not in A.vol and norm(A.ability) != "klutz" and D.alive and not hit_sub and norm(A.item) in ("kingsrock", "razorfang"):
+                if rng.random() < 0.1 and not D.moved and norm(D.ability) not in ("innerfocus", "shielddust") and norm(A.ability) != "sheerforce":
+                    D.vol.add("flinch")                           # 왕의징표석/날카로운이빨: 타격마다 10% 풀죽음 (다단 기술은 타마다)
             deferred = (eff_mv, dmg, hp_before) if nhits == 1 else None
             self._on_hit(st, i, o, eff_mv, rng, dmg, hp_before, crit, defer=nhits == 1)
             if key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.ability) != "stickyhold" and not (
@@ -1887,7 +1892,11 @@ class Engine:
         if A.alive and landed and st.sides[i].mon is A:
             self.run_hook(st, i, A, "on_damage_taken_hp", rng)
         if A.alive and landed and st.sides[i].mon is A:           # 생명의구슬/조개껍질방울은 낙오카드 등이 끝난 뒤
-            self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="item")
+            self._no_flinch_item = True
+            try:
+                self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="item")
+            finally:
+                self._no_flinch_item = False
         if landed and not hit_sub and A.alive and D.alive and st.sides[i].mon is A and st.sides[o].mon is D:
             if norm(A.ability) == "magician" and not A.item and D.item and key != "fling" and norm(D.ability) != "stickyhold" \
                     and not self._own_stone(D):                           # magician: 기술을 맞힌 상대의 도구를 빼앗는다
