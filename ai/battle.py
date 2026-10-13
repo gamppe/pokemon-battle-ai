@@ -103,6 +103,7 @@ class BMon:
     hangry: bool = False                      # 모르페코 배고픈 모양
     stock_d: int = 0                          # 비축하기로 실제로 오른 방어/특방 단계
     stock_s: int = 0
+    mim_t: str | None = None                  # 의태가 마지막으로 반영한 필드
     syrup: bool = False                       # 달콤시럽(Supersweet Syrup)은 배틀 중 한 번만 발동
     uproar: int = 0                           # 소란피기 남은 턴 (걸려 있는 동안 기술이 고정되고 아무도 잠들지 않는다)
     prev_move: str = ""
@@ -867,6 +868,7 @@ class Engine:
             old.ate_berry = False
             old.opp, old.cud_berry, old.cud_n = {}, "", 0
             old.stat_over = {}
+            old.mim_t = None
             old.hangry = False
             old.magnet, old.syrup_n, old.oct_src, old.trap2_src = 0, 0, None, None
             old.sub, old.charge, old.semi, old.trap = 0, None, None, 0
@@ -1007,9 +1009,11 @@ class Engine:
             m = S.mon
             if m.alive and norm(m.ability) == "forecast" and m.sid.startswith("castform"):
                 m.types = [{"sun": "Fire", "rain": "Water", "snow": "Ice"}.get(self.wx(st), "Normal")]
-            elif m.alive and norm(m.ability) == "mimicry":                # 의태: 필드에 맞춰 타입이 바뀌고, 필드가 사라지면 원래대로 돌아온다
+            elif m.alive and norm(m.ability) == "mimicry" and m.mim_t != st.terrain:      # 의태: 필드가 바뀔 때만 타입이 바뀐다 (사라지면 원래대로)
                 t_ = {"electric": "Electric", "grassy": "Grass", "misty": "Fairy", "psychic": "Psychic"}.get(st.terrain)
-                m.types = [t_] if t_ else list(self.data.pokemon[m.sid]["types"]) if m.sid in self.data.pokemon else m.types
+                if t_ or m.mim_t:
+                    m.types = [t_] if t_ else list(self.data.pokemon[m.sid]["types"]) if m.sid in self.data.pokemon else m.types
+                m.mim_t = st.terrain
 
     def _set_weather(self, st, w, bm):
         st.weather = w
@@ -2273,7 +2277,7 @@ class Engine:
             if D.sub > 0 and "bypasssub" not in mv["flags"] and norm(A.ability) != "infiltrator":
                 return
             for r in mv["rules"]:
-                if r["type"] == "target_immunity":
+                if r["type"] == "target_immunity" and key != "toxicthread":        # 독실(독 면역이어도 속도 하락은 들어간다)
                     p_ = r["params"]
                     if any(t in self.types_of(D) for t in p_.get("immune_types", [])):
                         return
@@ -2398,6 +2402,14 @@ class Engine:
                 return
         if key == "noretreat" and "noretreat" in A.vol:
             self._sfail = True
+            return
+        if key == "acupressure":                               # 지압: 무작위 능력 하나를 2단계 올린다 (최대인 능력은 제외, 전부 최대면 실패)
+            names = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]
+            ok_ = [s_ for s_ in names if A.boosts.get(s_, 0) < 6]
+            if ok_:
+                self.change_boost(st, i, A, rng.choice(ok_), 2)
+            else:
+                self._sfail = True
             return
         if key == "teatime":                                   # 티타임: 필드의 모든 포켓몬이 지닌 열매를 먹는다
             any_ = False
@@ -2889,7 +2901,7 @@ class Engine:
                     bm.vol.discard("octolock")
             if bm.alive and bm.syrup_n:                           # 물엿폭탄: 4턴 동안 매 턴 속도 -1
                 s_ = bm.syrup_src
-                if s_ and st.sides[s_[0]].active == s_[1]:
+                if s_ and st.sides[s_[0]].active == s_[1] and st.sides[s_[0]].mon.alive:
                     bm.syrup_n -= 1                                # 지속 4: 매 턴 끝 카운트가 먼저 줄고 0 이 되면 효과 없이 끝난다 (3번 하락)
                     if bm.syrup_n:
                         self.change_boost(st, i, bm, "spe", -1, src_side=s_[0])
