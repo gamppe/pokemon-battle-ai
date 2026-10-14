@@ -2806,7 +2806,7 @@ class Engine:
             self.hp_change(st, i, A, amount, "회복")
         for r in mv["rules"]:
             if r["type"] == "extra_effect" and r["params"].get("effect") == "full_heal_and_sleep":
-                sleepless = norm(A.ability) in ("insomnia", "vitalspirit", "sweetveil") or any(S_.mon.alive and S_.mon.uproar for S_ in st.sides) or (
+                sleepless = norm(A.ability) in ("insomnia", "vitalspirit", "sweetveil", "purifyingsalt") or any(S_.mon.alive and S_.mon.uproar for S_ in st.sides) or (
                     st.terrain in ("electric", "misty") and self._grounded(A))
                 if A.status != "slp" and A.hp < A.maxhp and not sleepless:
                     A.hp, A.status, A.sleep = A.maxhp, "slp", 3

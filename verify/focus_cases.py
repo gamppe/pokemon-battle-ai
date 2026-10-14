@@ -196,8 +196,34 @@ def team_sleeptalk(rng):
     return team
 
 
+ABIL_USERS = [("Thermal Exchange", "baxcalibur"), ("Scrappy", "kangaskhan"), ("Scrappy", "lopunny"), ("Fairy Aura", "gardevoir"), ("Defiant", "bisharp"),
+              ("Defiant", "kingambit"), ("Competitive", "milotic"), ("Competitive", "gardevoir"), ("Thick Fat", "snorlax"), ("Thick Fat", "azumarill"),
+              ("Oblivious", "slowbro"), ("Oblivious", "lickilicky"), ("Innards Out", "pyukumuku"), ("Water Bubble", "araquanid"),
+              ("Purifying Salt", "garganacl"), ("Limber", "persian"), ("Ice Body", "glaceon"), ("Flower Veil", "florges"), ("Damp", "politoed"),
+              ("Anger Point", "primeape"), ("Solar Power", "charizard"), ("Rain Dish", "blastoise"), ("Unnerve", "tyranitar"), ("Inner Focus", "lucario")]
+ABIL_ITEMS = ["Sitrus Berry", "Sitrus Berry", "Chesto Berry", "Lum Berry", "Haban Berry", "Shuca Berry", "Chople Berry", "Colbur Berry", "Kasib Berry",
+              "Wacan Berry", "Grassy Seed", "Psychic Seed", "Misty Seed", "Electric Seed", "Leftovers", None]
+ABIL_TRIG = ["fakeout", "icywind", "willowisp", "thunderwave", "spore", "taunt", "closecombat", "flamethrower", "icebeam", "dragonclaw", "earthquake",
+             "dazzlinggleam", "shadowball", "snarl", "leer", "intimidate", "psychicterrain", "grassyterrain", "mistyterrain", "electricterrain", "raindance",
+             "sunnyday", "snowscape", "sandstorm", "uturn", "knockoff", "rest", "swordsdance", "crunch", "highhorsepower", "hurricane", "thunderbolt"]
+
+
+def team_abil(rng):
+    team = []
+    for ab, sid in rng.sample(ABIL_USERS, 2):
+        if sid not in data.pokemon:
+            sid = "garchomp"
+        team.append(mk(sid, rng, ab, rng.choice(ABIL_ITEMS), rng.sample([m for m in ABIL_TRIG if m in data.moves], 4)))
+    other = rng.choice(["incineroar", "landorustherian", "gyarados", "salamence", "hydreigon", "ursaluna", "garchomp"])
+    other = other if other in data.pokemon else "garchomp"
+    team.append(mk(other, rng, None, rng.choice(ABIL_ITEMS), rng.sample([m for m in ABIL_TRIG if m in data.moves], 4)))
+    rng.shuffle(team)
+    return team
+
+
 CATS = {"weather": (team_weather, WEATHER_MOVES), "terrain": (team_terrain, TERRAIN_MOVES), "screens": (team_screens, ["lightscreen", "reflect", "auroraveil", "brickbreak", "psychicfangs", "defog"]),
-        "knockoff": (team_knockoff, ["knockoff", "thief", "covet", "bugbite", "pluck", "fling", "trick"]), "sleeptalk": (team_sleeptalk, ["rest", "sleeptalk", "whirlwind", "roar"])}
+        "knockoff": (team_knockoff, ["knockoff", "thief", "covet", "bugbite", "pluck", "fling", "trick"]), "sleeptalk": (team_sleeptalk, ["rest", "sleeptalk", "whirlwind", "roar"]),
+        "abil": (team_abil, ABIL_TRIG)}
 names = list(CATS) if CAT == "all" else [CAT]
 
 rng = random.Random(SEED)

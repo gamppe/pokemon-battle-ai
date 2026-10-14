@@ -20,15 +20,16 @@ for en, (ko, ja) in ABILITY_NAMES.items():
 ITEM_NAMES = {"Leek": ("대파", "ながねぎ")}
 for en, (ko, ja) in ITEM_NAMES.items():
     cur.execute("update item set name_ko=%s, name_ja=%s where name_en=%s", (ko, ja, en))
-# 스케일샷: 연속 공격 후 방어 -1, 스피드 +1 (기존 적재에 부가효과가 비어 있음. Showdown selfBoost 기준)
-cur.execute("select move_id from move where name_en='Scale Shot'")
-row = cur.fetchone()
-if row:
-    for stat, stg in (("def", -1), ("spe", 1)):
-        cur.execute("select 1 from move_effect where move_id=%s and game_id=0 and code=%s and trigger_type='primary'", (row[0], stat))
-        if not cur.fetchone():
-            cur.execute("insert into move_effect (move_id, trigger_type, applies_to, kind, code, stages, chance_pct, game_id) "
-                        "values (%s,'primary','self','stat_stage',%s,%s,100,0)", (row[0], stat, stg))
+# 스케일샷/클랭잉스케일: 사용 후 자기 능력 변화 (적재에 부가효과가 비어 있음. Showdown selfBoost 기준)
+for mname, boosts in (("Scale Shot", (("def", -1), ("spe", 1))), ("Clanging Scales", (("def", -1),))):
+    cur.execute("select move_id from move where name_en=%s", (mname,))
+    row = cur.fetchone()
+    if row:
+        for stat, stg in boosts:
+            cur.execute("select 1 from move_effect where move_id=%s and game_id=0 and code=%s and trigger_type='primary'", (row[0], stat))
+            if not cur.fetchone():
+                cur.execute("insert into move_effect (move_id, trigger_type, applies_to, kind, code, stages, chance_pct, game_id) "
+                            "values (%s,'primary','self','stat_stage',%s,%s,100,0)", (row[0], stat, stg))
 # 되살리기(Revival Blessing)는 교체 기술이 아니다 (적재 과정에서 self_switch 가 잘못 켜져 있었음)
 cur.execute("update move set self_switch=0 where name_en='Revival Blessing'")
 db.commit()

@@ -64,7 +64,7 @@ def main():
     cur.execute("select m.name_en, avg(u.pct) p from meta_move u join move m using(move_id) group by m.name_en") if False else None
     use = {}
     try:
-        cur.execute("select m.name_en n, sum(u.usage_pct) p from meta_move u join move m on m.move_id=u.move_id "
+        cur.execute("select m.name_en n, sum(u.weight) p from meta_move u join move m on m.move_id=u.move_id "
                     "where u.snapshot_id=33 group by m.name_en")
         use = {norm(r["n"]): float(r["p"] or 0) for r in cur.fetchall()}
     except Exception as e:
