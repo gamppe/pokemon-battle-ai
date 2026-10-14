@@ -88,22 +88,24 @@ def norm_seq(toks):
     return tuple(out)
 
 
-def our_tokens(eng, sc, r, seed, turn_idx=0):
+def our_tokens(eng, sc, r, seed):
+    """-> [턴별 순서열] (엔진이 끝난 뒤의 턴은 ())"""
     rng = random.Random(seed * 100003 + r)
     st = eng.new_state(sc["teams"][0], sc["teams"][1], rng=rng)
+    outs = []
     for k, turn in enumerate(sc["turns"]):
         if st.winner is not None:
-            break
+            outs.append(())
+            continue
         acts = []
         for i in (0, 1):
             a = tuple(turn[i])
             legal = eng.legal_actions(st, i)
             acts.append(a if a in legal else legal[0])
-        st.trace = [] if k == turn_idx else None
+        st.trace = []
         eng.step(st, acts, rng, None)
-        if k == turn_idx:
-            return norm_seq(st.trace)
-    return ()
+        outs.append(norm_seq(st.trace))
+    return outs
 
 
 def fmt(seq):
@@ -133,6 +135,8 @@ def main():
     ap.add_argument("--n", type=int, default=300)
     ap.add_argument("--runs", type=int, default=200)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--turns", type=int, default=1)
+    ap.add_argument("--switch", type=float, default=0.0)
     ap.add_argument("--snap", type=int, default=33)
     ap.add_argument("--min-tv", type=float, default=0.12)
     ap.add_argument("--alpha", type=float, default=1e-5)
@@ -142,7 +146,7 @@ def main():
     conn = connect()
     data = GameData(conn)
     meta = Meta(conn, data, a.snap)
-    scs = make_scenarios(meta, data, a.n, 1, a.seed)
+    scs = make_scenarios(meta, data, a.n, a.turns, a.seed, None, a.switch)
     os.makedirs(OUT, exist_ok=True)
     procs = []
     for w in range(a.workers):
@@ -164,19 +168,22 @@ def main():
         r = sd[s["id"]]
         if "error" in r:
             continue
-        A = collections.Counter(sd_tokens(x["log"]) for x in r["results"])
-        B = collections.Counter(our_tokens(eng, s, k, a.seed) for k in range(a.runs))
-        c = compare(A, B, a.min_tv)
-        if c and c[0] < a.alpha:
-            flagged.append((s, A, B, c))
-    print(f"[trace] 시나리오 {len(scs)}개 x {a.runs}회: 순서열 분포 불일치 {len(flagged)}개")
-    for s, A, B, c in flagged[:a.show]:
+        ours = [our_tokens(eng, s, k, a.seed) for k in range(a.runs)]
+        for t in range(a.turns):
+            A = collections.Counter(sd_tokens(x["log"], t + 1) for x in r["results"])
+            B = collections.Counter(o[t] for o in ours)
+            c = compare(A, B, a.min_tv)
+            if c and c[0] < a.alpha:
+                flagged.append((s, A, B, c, t + 1))
+                break                    # 뒤 턴은 앞 턴 차이의 영향을 받으므로 첫 불일치 턴만 본다
+    print(f"[trace] 시나리오 {len(scs)}개 x {a.runs}회, {a.turns}턴: 순서열 분포 불일치 {len(flagged)}개")
+    for s, A, B, c, t in flagged[:a.show]:
         t0, t1 = s["teams"][0][0], s["teams"][1][0]
-        print(f"== {s['id']} {t0['sid']}/{t0['ability']}/{t0['item']} {t0['moves']} vs {t1['sid']}/{t1['ability']}/{t1['item']} {t1['moves']} acts={s['turns'][0]} p={c[0]:.1e} tv={c[1]:.2f}")
+        print(f"== {s['id']} 턴{t} {t0['sid']}/{t0['ability']}/{t0['item']} {t0['moves']} vs {t1['sid']}/{t1['ability']}/{t1['item']} {t1['moves']} acts={s['turns'][:t]} p={c[0]:.1e} tv={c[1]:.2f}")
         keys = sorted(set(A) | set(B), key=lambda k: -abs(A[k] - B[k]))[:4]
         for k in keys:
             print(f"   SD {A[k]:4d} / ours {B[k]:4d}  {fmt(k)}")
-    json.dump([dict(id=s["id"], teams=s["teams"], turns=s["turns"], p=c[0], tv=c[1]) for s, _, _, c in flagged],
+    json.dump([dict(id=s["id"], teams=s["teams"], turns=s["turns"], p=c[0], tv=c[1], turn=t) for s, _, _, c, t in flagged],
               open(os.path.join(OUT, "trace_mismatch.json"), "w"), default=str)
 
 

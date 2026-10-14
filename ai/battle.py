@@ -1961,6 +1961,13 @@ class Engine:
                 st.terrain, st.terrain_turns = None, 0
             elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard" and A.alive and norm(A.ability) != "sheerforce":      # 대타를 때려도 깐다 (onAfterSubDamage)
                 self._side_condition(st, o, {"stealth_rock": "stealthrock"}.get(r["params"]["hazard"], r["params"]["hazard"]), swap=True)
+        if A.alive and landed and st.sides[i].mon is A:           # 생명의구슬/조개껍질방울(AfterMoveSecondarySelf)은 끌어내기/유턴 교체보다 먼저
+            self._no_flinch_item = True
+            try:
+                if not (norm(A.ability) == "sheerforce" and mv["has_secondary"] and norm(A.item) == "lifeorb"):     # 힘센손: 부가효과가 사라진 기술은 생명의구슬 반동이 없다
+                    self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="item")
+            finally:
+                self._no_flinch_item = False
         if mv["force_switch"] and not mv["self_switch"] and D.alive and not hit_sub and D.sub == 0 and norm(D.ability) != "suctioncups" and "ingrain" not in D.vol and not (norm(D.ability) == "guarddog" and norm(A.ability) not in MOLD_BREAKERS):
             cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]        # 드래곤테일 등: 끌어내기가 레드카드/탈출버튼보다 먼저
             if cand:
@@ -1976,13 +1983,6 @@ class Engine:
                 self._berry_now(st, o, D, rng)
         if A.alive and landed and st.sides[i].mon is A:
             self.run_hook(st, i, A, "on_damage_taken_hp", rng)
-        if A.alive and landed and st.sides[i].mon is A:           # 생명의구슬/조개껍질방울은 낙오카드 등이 끝난 뒤
-            self._no_flinch_item = True
-            try:
-                if not (norm(A.ability) == "sheerforce" and mv["has_secondary"] and norm(A.item) == "lifeorb"):     # 힘센손: 부가효과가 사라진 기술은 생명의구슬 반동이 없다
-                    self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="item")
-            finally:
-                self._no_flinch_item = False
         if landed and not hit_sub and A.alive and D.alive and st.sides[i].mon is A and st.sides[o].mon is D:
             if norm(A.ability) == "magician" and not A.item and D.item and key != "fling" and norm(D.ability) != "stickyhold" \
                     and not self._own_stone(D):                           # magician: 기술을 맞힌 상대의 도구를 빼앗는다
