@@ -221,9 +221,48 @@ def team_abil(rng):
     return team
 
 
+def _users(move_names):
+    c = conn.cursor()
+    q = ",".join(["%s"] * len(move_names))
+    c.execute(f"select distinct p.showdown_id sid from pokemon_move pm join pokemon p using(pokemon_id) join move m using(move_id) where pm.game_id=4 and m.name_en in ({q})", tuple(move_names))
+    return [r["sid"] for r in c.fetchall() if r["sid"] in data.pokemon]
+
+
+GAP_KINDS = {
+    "poisontouch": (["sneasler"], ["fakeout", "closecombat", "direclaw", "firepunch", "knockoff", "throatchop"], "Poison Touch"),
+    "perish": (_users(["Perish Song"]), ["perishsong", "protect", "shadowball", "substitute", "uturn"], None),
+    "magicroom": (_users(["Magic Room"]), ["magicroom", "psychic", "recover", "trickroom", "calmmind"], None),
+    "disable": (_users(["Disable"]), ["disable", "shadowball", "protect", "flamethrower", "willowisp"], None),
+    "upperhand": (_users(["Upper Hand"]), ["upperhand", "closecombat", "machpunch", "fakeout", "suckerpunch"], None),
+}
+PRIO = ["fakeout", "quickattack", "extremespeed", "aquajet", "machpunch", "suckerpunch", "shadowsneak", "iceshard", "bulletpunch", "protect"]
+GAP_ITEMS = ["Sitrus Berry", "Leftovers", "Choice Scarf", "Life Orb", "Lum Berry", "Focus Sash", None, "Rocky Helmet"]
+
+
+def team_gaps(rng, kind=None):
+    kind = kind or rng.choice(list(GAP_KINDS))
+    users, mvs, ab = GAP_KINDS[kind]
+    users = [u for u in users if u in data.pokemon and "mega" not in u] or ["garchomp"]      # 메가 종이 메가스톤 없이 나오는 비현실 세트는 제외
+    team = []
+    picks = rng.sample(users, min(2, len(users)))
+    while len(picks) < 2:
+        picks.append(rng.choice([u for u in ("garchomp", "gengar", "dragonite", "kingambit") if u not in picks]))
+    for sid in picks:
+        mv = [m for m in mvs if m in data.moves]
+        team.append(mk(sid, rng, ab, rng.choice(GAP_ITEMS), rng.sample(mv, min(4, len(mv))), must=[mv[0]] if rng.random() < 0.8 else []))
+    opp = rng.choice(["indeedee", "garchomp", "gengar", "hydreigon", "kingambit", "sneasler", "incineroar"])
+    opp = opp if opp in data.pokemon else "garchomp"
+    mv = [m for m in PRIO + ["closecombat", "earthquake", "psychic", "knockoff"] if m in data.moves]
+    team.append(mk(opp, rng, None, rng.choice(GAP_ITEMS), rng.sample(mv, 4)))
+    rng.shuffle(team)
+    return team
+
+
 CATS = {"weather": (team_weather, WEATHER_MOVES), "terrain": (team_terrain, TERRAIN_MOVES), "screens": (team_screens, ["lightscreen", "reflect", "auroraveil", "brickbreak", "psychicfangs", "defog"]),
         "knockoff": (team_knockoff, ["knockoff", "thief", "covet", "bugbite", "pluck", "fling", "trick"]), "sleeptalk": (team_sleeptalk, ["rest", "sleeptalk", "whirlwind", "roar"]),
         "abil": (team_abil, ABIL_TRIG)}
+for _k in GAP_KINDS:
+    CATS["gap_" + _k] = ((lambda r, _k=_k: team_gaps(r, _k)), GAP_KINDS[_k][1] + PRIO)
 names = list(CATS) if CAT == "all" else [CAT]
 
 rng = random.Random(SEED)

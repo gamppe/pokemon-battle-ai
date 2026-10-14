@@ -5,11 +5,11 @@ from ai.battle import Engine
 from ai.gamedata import GameData, connect
 SP = {"hp": 32, "atk": 16, "def": 8, "spa": 16, "spd": 8, "spe": 16}
 def mon(sid, ab, moves, item): return dict(sid=sid, ability=ab, item=item, nature="Serious", sp=SP, moves=moves)
-A = mon("gholdengo", "Good as Gold", ["trick", "shadowball", "makeitrain", "recover"], "Choice Scarf")
+A = mon(os.environ.get("ASID", "gholdengo"), "Good as Gold", os.environ.get("AMOVES", "trick,shadowball,makeitrain,recover").split(","), os.environ.get("AITEM", "Choice Scarf"))
 B = mon(os.environ.get("BSID", "snorlax"), "Rough Skin", os.environ.get("BMOVES", "bodyslam,earthquake,crunch,rest").split(","), "Choice Scarf")
 bench = [mon("clefable", "Magic Guard", ["moonblast"], ""), mon("torkoal", "White Smoke", ["yawn"], "")]
 teams = [[A] + bench, [B] + bench]
-open("verify/out/lock_in.json", "w").write(json.dumps([dict(id="x", teams=teams, turns=[[["m", 0], ["m", int(sys.argv[1]) if len(sys.argv) > 1 else 0]]], runs=1)]))
+open("verify/out/lock_in.json", "w").write(json.dumps([dict(id="x", teams=teams, turns=[[["m", int(os.environ.get("AMOVE", "0"))], ["m", int(sys.argv[1]) if len(sys.argv) > 1 else 0]]], runs=1)]))
 js = r'''
 const path=require('path'),fs=require('fs');const sd=path.resolve('showdown');
 const {Battle,Dex}=require(path.join(sd,'dist/sim'));
@@ -27,7 +27,7 @@ print("Showdown:", r.stdout.strip(), r.stderr[-300:])
 eng = Engine(GameData(connect()))
 rng = random.Random(1)
 st = eng.new_state(teams[0], teams[1], rng=rng)
-eng.step(st, [("m", 0), ("m", int(sys.argv[1]) if len(sys.argv) > 1 else 0)], rng, None)
+eng.step(st, [("m", int(os.environ.get("AMOVE", "0"))), ("m", int(sys.argv[1]) if len(sys.argv) > 1 else 0)], rng, None)
 for i in (0, 1):
     m = st.sides[i].mon
     print("우리", "AB"[i], "도구:", m.item, "잠금:", m.locked, "가능한 행동:", [(a, m.spec["moves"][a[1]]) if a[0] == "m" else a for a in eng.legal_actions(st, i)])

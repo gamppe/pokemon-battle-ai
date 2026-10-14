@@ -61,6 +61,7 @@ class Mon:
     hangry: bool = False
     grounded_vol: bool = False   # 쓰러뜨리기/뿌리박기로 땅에 붙은 상태
     levitating: bool = False     # 전자부유 중
+    hid_item: str = ""            # 매직룸으로 가려진 도구 (탁쳐서떨구기 위력 보정 판정용)
     maxhp: int = 0
     hp: int = 0
     name: str = ""
@@ -96,6 +97,7 @@ def make_mon(data: GameData, spec: dict) -> Mon:
     m.weight_hg = max(1, w)
     m.gender = spec.get("gender", "N")
     m.hangry = bool(spec.get("hangry"))
+    m.hid_item = spec.get("hid_item", "")
     m.grounded_vol, m.levitating = bool(spec.get("grounded_vol")), bool(spec.get("levitating"))
     m.maxhp = m.base["hp"] + sp["hp"] + 75
     m.hp = m.maxhp if m.hp_frac is None else max(1, math.floor(m.maxhp * m.hp_frac))
@@ -387,7 +389,7 @@ def base_power(c: Ctx):
                 elif k == "weather_in":
                     ok &= attacker_weather(c, c.F) in v.split("|")
                 elif k == "target_has_removable_item":
-                    it = norm(c.D.item)
+                    it = norm(c.D.item or c.D.hid_item)
                     mega = any(x["kind"] == "mega_stone" for x in c.data.item_fx.get(it, []))
                     ok &= bool(it) and not mega
                 elif k in ("target_hurt_this_turn", "user_hit_by_target_this_turn", "user_stats_lowered_this_turn",

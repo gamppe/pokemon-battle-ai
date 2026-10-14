@@ -277,7 +277,7 @@ class Engine:
         bm = S.mon
         if S.mega_used or bm.orig is not None or not bm.alive:
             return None
-        return self.mega_map.get(norm(bm.item), {}).get(norm(bm.sid))
+        return self.mega_map.get(norm(bm.item or bm.hid_item), {}).get(norm(bm.sid))        # 매직룸으로 가려져도 메가진화는 할 수 있다 (Showdown getItem)
 
     def _mega_evolve(self, st, i, rng):
         S = st.sides[i]
@@ -341,7 +341,7 @@ class Engine:
     def spec_of(self, bm: BMon):
         s = bm.spec
         return dict(sid=bm.sid, ability=bm.ability, item=bm.item, nature=s.get("nature", "Serious"), sp=s.get("sp", {}),
-                    boosts=dict(bm.boosts), status=bm.status, hp_frac=bm.hp / bm.maxhp, gender=s.get("gender", "N"), types=self.types_of(bm), stat_over=dict(bm.stat_over), hangry=bm.hangry, hero=bm.hero,
+                    boosts=dict(bm.boosts), status=bm.status, hp_frac=bm.hp / bm.maxhp, hid_item=bm.hid_item, gender=s.get("gender", "N"), types=self.types_of(bm), stat_over=dict(bm.stat_over), hangry=bm.hangry, hero=bm.hero,
                     grounded_vol=bool("smackdown" in bm.vol or "ingrain" in bm.vol), levitating=bool(bm.magnet))
 
     def field_for(self, st, defender_side):
@@ -879,6 +879,7 @@ class Engine:
         passed = None
         if to is not None:
             old = S.mon
+            so_rows = self.rows(old, "switch_out")                  # 나가는 순간의 특성(트레이스/변신으로 얻은 것 포함)으로 판정한다 (Showdown SwitchOut -> 그 뒤 원래 특성 복귀)
             if carry == "sub":
                 passed = ({}, old.sub, set(), {})
             elif carry:
@@ -904,7 +905,7 @@ class Engine:
                 if old.pp_orig:
                     old.pp, old.maxpp = old.pp_orig
                     old.pp_orig = None
-            for src, r in self.rows(old, "switch_out"):
+            for src, r in so_rows:
                 if r["kind"] == "heal_frac" and old.alive:
                     old.hp = min(old.maxhp, old.hp + math.floor(old.maxhp * _frac(r["value"]) + 1e-9))
                 elif r["kind"] == "cure_status":
@@ -1200,6 +1201,8 @@ class Engine:
             self._later, self._starts = [m_[0] for m_ in movers[n + 1:]], starts
             hp0 = [st.sides[0].mon.hp, st.sides[1].mon.hp]
             mons0 = [st.sides[0].mon, st.sides[1].mon]
+            self._act0 = (mons0, hp0)
+            self._pivot_eff = None
             self._do_action(st, i, acts[i], acts, rng, switch_policy)
             pend, self._pending = self._pending, []
             for fn in pend:
@@ -1241,6 +1244,17 @@ class Engine:
         return st
 
     def _emergency_exit(self, st, mons0, hp0, rng, switch_policy):
+        """유턴 교체와 비상탈출 교체가 같은 행동에서 겹치면 두 교체가 모두 끝난 뒤 등장 효과(위협 등)가 속도 순으로 발동한다"""
+        pe = getattr(self, "_pivot_eff", None)
+        self._pivot_eff = None
+        self._ee_effs = [pe] if pe else []
+        self._emergency_exit0(st, mons0, hp0, rng, switch_policy, defer=bool(pe))
+        effs, self._ee_effs = self._ee_effs, []
+        for side_, fn in sorted(effs, key=lambda x: ((1 if st.trick_room else -1) * self.speed_of(st, x[0]), rng.random())):
+            if fn:
+                fn()
+
+    def _emergency_exit0(self, st, mons0, hp0, rng, switch_policy, defer=False):
         """비상탈출/도주경로: 행동(또는 턴 종료) 중 HP 가 절반 초과 -> 절반 이하로 떨어지면 바로 교체한다 (Showdown EmergencyExit 이벤트)"""
         if st.winner is not None:
             return
@@ -1258,7 +1272,9 @@ class Engine:
             self._say(st, f"  {m.name} 비상탈출")
             cand = [j for j in st.sides[i].alive_idx() if j != st.sides[i].active]
             j = switch_policy(st, i) if switch_policy else cand[0]
-            self._switch_in(st, i, rng, to=j if j in cand else cand[0])
+            r_ = self._switch_in(st, i, rng, to=j if j in cand else cand[0], defer=defer)
+            if defer and r_:
+                self._ee_effs.append((i, r_))
 
     def _replace(self, st, i, rng, switch_policy, defer=False):
         alive = st.sides[i].alive_idx()
@@ -1385,6 +1401,10 @@ class Engine:
             return
         if bm.healblock and "heal" in mv["flags"]:
             self._say(st, "  힐블록으로 사용 불가")
+            return
+        if act[0] != "t" and bm.locked and norm(bm.item) in CHOICE and norm(mname) != norm(bm.locked) and bm.charge != norm(mname)                 and any(norm(m_) == norm(bm.locked) for m_ in bm.spec["moves"]):
+            self._say(st, "  구애 고정으로 사용 불가")         # 매직룸이 중간에 끝나 도구가 되살아난 경우: 기술은 실패하고 PP 는 줄지 않는다 (Showdown choice onBeforeMove)
+            self._rampage_abort(st, bm, rng)
             return
         locked_on = bool(bm.charge == norm(mname) or ((bm.rampage or bm.uproar) and bm.last_move))      # 두 번째 턴(충전 공격)/난동부리기 잠금에서는 PP 가 줄지 않는다
         if act[0] != "t" and not locked_on:
@@ -1913,13 +1933,13 @@ class Engine:
         self._primary_self_effects(st, i, mv, rng)
         if mv["recoil"] and A.alive and total and norm(A.ability) not in ("rockhead", "magicguard"):
             self.hp_change(st, i, A, -max(1, math.floor(total * _frac(mv["recoil"] / 100) + 0.5)), "반동")
+        self._secondary(st, i, o, mv, rng, hit_sub)      # 대타는 상대에게 걸리는 부가효과만 막고, 자신에게 걸리는 효과(불꽃의charge 등)는 그대로 적용
         if A.alive and landed:
             self.run_hook(st, i, A, "on_hit_dealt", rng, mv=mv, dmg=total, foe_side=o, only="ability")
-        elif landed and D.alive:                           # 공격자가 접촉 반격으로 쓰러져도 독수/악취 같은 부가효과는 이미 적용된다
+        elif landed and D.alive:                           # 공격자가 접촉 반격으로 쓰러져도 독수/악취 같은 부가효과는 이미 적용된다 (기술의 부가효과를 먼저 판정한 뒤: Showdown 에서는 불꽃펀치 화상이 독수보다 먼저)
             for src_, r_ in self.rows(A, "on_hit_dealt"):
                 if src_ == "ability" and r_["kind"] in ("status", "volatile") and self._cond_ok(r_["cond"], st, i, A, mv, None):
                     self.apply_row(st, "ability:" + r_["label"].split(":", 1)[1], r_, i, A, rng, mv, total, o)
-        self._secondary(st, i, o, mv, rng, hit_sub)      # 대타는 상대에게 걸리는 부가효과만 막고, 자신에게 걸리는 효과(불꽃의charge 등)는 그대로 적용
         if nhits == 1 and norm(D.item) == "airballoon" and not hit_sub:
             D.item = ""                                    # 풍선은 부가효과(마비 등)를 판정한 뒤에 터진다
         if deferred and D.alive and st.sides[o].mon is D:                  # 열매 등 HP 조건 효과: 부가효과(힐블록 등)가 끝난 뒤에 판단
@@ -2003,7 +2023,14 @@ class Engine:
                 j = switch_policy(st, i) if switch_policy else cand[0]
                 if j not in cand:
                     j = cand[0]
-                self._switch_in(st, i, rng, to=j)
+                m0_, h0_ = getattr(self, "_act0", (None, None))
+                ee_ = m0_ is not None and any(                   # 상대가 이 공격으로 비상탈출이 발동하면 두 교체의 등장 효과를 한꺼번에 처리한다
+                    k_ != i and m0_[k_] is st.sides[k_].mon and st.sides[k_].mon.alive and norm(st.sides[k_].mon.ability) in ("emergencyexit", "wimpout")
+                    and h0_[k_] * 2 > st.sides[k_].mon.maxhp >= st.sides[k_].mon.hp * 2 and len(st.sides[k_].alive_idx()) > 1 for k_ in (0, 1))
+                if ee_:
+                    self._pivot_eff = (i, self._switch_in(st, i, rng, to=j, defer=True))
+                else:
+                    self._switch_in(st, i, rng, to=j)
 
     @staticmethod
     def _gem_flag(A, mv):
