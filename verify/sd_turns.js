@@ -92,7 +92,7 @@ for (const sc of scenarios) {
         forced();
       }
       const sm = summary(battle);
-      if (process.env.SD_LOG) sm.log = battle.log.filter(l => !l.startsWith('|split') && !l.startsWith('|t:|')).join('\n');
+      if (process.env.SD_LOG) sm.log = battle.log.filter(l => (process.env.SD_LOG === '2' || !l.startsWith('|split')) && !l.startsWith('|t:|')).join('\n');
       results.push(sm);
     } catch (e) { err = String(e && e.stack || e).split('\n').slice(0, 3).join(' | '); break; }
   }

@@ -430,6 +430,12 @@ class Engine:
             s *= 2
         return s
 
+    def _tr(self, st, kind, side, x=""):
+        """검증용 사건 추적 (st.trace 가 리스트일 때만 기록): Showdown 프로토콜 사건 순서와 대조한다"""
+        t = getattr(st, "trace", None)
+        if t is not None:
+            t.append((kind, side, x))
+
     def hp_change(self, st, side, bm, delta, why=""):
         before = bm.hp
         if delta > 0 and bm.healblock:
@@ -439,6 +445,8 @@ class Engine:
             bm.dmg_turn = st.turn
         if not before and bm.hp:
             bm.faint_logged = False
+        if bm.hp != before and why not in ("자폭", "메멘토", "길동무", "멸망의노래", "healingwish", "lunardance"):       # 자기희생은 Showdown 도 피해 로그 없이 faint 만 낸다
+            self._tr(st, "dmg" if bm.hp < before else "heal", side)
         if before and not bm.hp:
             if not bm.faint_logged:
                 st.last_faint_side = side
@@ -510,6 +518,7 @@ class Engine:
         """도구를 써서 없앤다 (Showdown useItem/eatItem): 마지막 도구/사용 턴 기록, 열매면 되새김질 예약"""
         it = bm.item
         bm.last_item, bm.used_turn = it, st.turn
+        self._tr(st, "item", 0 if st.sides[0].mon is bm else 1)
         if norm(it).endswith("berry"):
             bm.ate_berry = True
             if norm(bm.ability) == "cheekpouch" and bm.alive:             # 볼주머니: 열매를 먹으면 최대 HP 1/3 회복
@@ -695,6 +704,8 @@ class Engine:
         old = bm.boosts.get(stat, 0)
         new = max(-6, min(6, old + n))
         bm.boosts[stat] = new
+        if new != old:
+            self._tr(st, "boost" if new > old else "unboost", side, stat)
         if n > 0 and new != old:
             bm.raised_turn = st.turn or 1                    # 배틀 시작 시점의 변화는 첫 턴에 일어난 것으로 본다
             if not getattr(self, "_in_opp", False):                 # 편승: 상대의 능력 상승을 모아 두었다가 따라 올린다
@@ -751,6 +762,7 @@ class Engine:
             bm.frz_n = 3
         bm.status = code
         bm.tox = 1 if code == "tox" else 0
+        self._tr(st, "status", side, "tox" if code == "tox" else code)
         self._say(st, f"  {bm.name} → {code}")
         self._status_item_cure(st, bm, code)
         if bm.status and ab == "synchronize" and src_side is not None and src_side != side and code in ("par", "brn", "psn", "tox"):
@@ -863,6 +875,7 @@ class Engine:
     # ───────────────────────── 교체 ─────────────────────────
     def _switch_in(self, st, side, rng, to=None, carry=False, defer=False):
         S = st.sides[side]
+        self._tr(st, "switch", side)
         passed = None
         if to is not None:
             old = S.mon
@@ -1648,7 +1661,10 @@ class Engine:
             if req == "target_will_use_attacking_move":
                 o = 1 - i
                 a = acts[o]
-                if a[0] != "m" or st.sides[o].mon.moved or self.data.moves[norm(st.sides[o].mon.spec["moves"][a[1]])]["category"] == "status":
+                if a[0] == "t":                       # 발버둥은 공격 기술이다 (불의주먹 등으로 봉인돼 발버둥을 쓰는 상대에게도 기습이 성공한다)
+                    if st.sides[o].mon.moved:
+                        return False
+                elif a[0] != "m" or st.sides[o].mon.moved or self.data.moves[norm(st.sides[o].mon.spec["moves"][a[1]])]["category"] == "status":
                     return False
             for tok in p.get("fails_if", "").split("|"):
                 if tok == "user_full_hp" and bm.hp == bm.maxhp:
@@ -2870,6 +2886,7 @@ class Engine:
             if bm.alive and self.wx(st) == "sand" and bm.charge not in ("dig", "dive") and not any(t in ("Rock", "Ground", "Steel") for t in bm.types) and \
                     norm(bm.ability) not in ("magicguard", "overcoat", "sandveil", "sandrush", "sandforce") and norm(bm.item) != "safetygoggles":
                 self.hp_change(st, i, bm, -max(1, bm.maxhp // 16), "모래바람")
+                self._hp_berry_update(st, rng)                   # Showdown fieldEvent: 효과 하나가 끝날 때마다 Update (HP 열매)
         for i in order:                                       # 효과 종류별로 모든 포켓몬을 처리한다 (날씨 1 -> 미래예지/희망사항 -> 필드·도구 -> 씨뿌리기 8 -> 독/화상 9~10)
             bm = st.sides[i].mon
             fut = st.sides[i].future
@@ -2892,8 +2909,10 @@ class Engine:
                 continue
             if st.terrain == "grassy" and bm.alive and self._grounded(bm):
                 self.hp_change(st, i, bm, max(1, bm.maxhp // 16), "그래스필드")
+                self._hp_berry_update(st, rng)
             if bm.alive:
-                for src, r in self.rows(bm, "turn_end"):
+                late_ab = ("Speed Boost", "Moody", "Bad Dreams")          # Showdown residual order 28: 먹다남은음식(5) 등 도구보다 늦다
+                for src, r in sorted(self.rows(bm, "turn_end"), key=lambda sr: sr[0] == "ability" and sr[1]["label"].endswith(late_ab)):
                     if not self._cond_ok(r["cond"], st, i, bm):
                         continue
                     if r["label"].endswith("Speed Boost") and bm.active_turns == 0:
@@ -2902,6 +2921,7 @@ class Engine:
                         continue
                     if r["kind"] in ("heal_frac", "damage_frac", "cure_status", "stat_stage"):
                         self.apply_row(st, r["label"], r, i, bm, rng)
+                        self._hp_berry_update(st, rng)
                         if not bm.alive:
                             break
             if bm.alive and norm(bm.item) == "blacksludge":
@@ -2934,6 +2954,7 @@ class Engine:
                     bm.tox = min(15, bm.tox + 1)
                 elif bm.status == "brn":
                     self.hp_change(st, i, bm, -max(1, bm.maxhp // (32 if norm(bm.ability) == "heatproof" else 16)), "화상")
+                self._hp_berry_update(st, rng)
         for i in order:              # Showdown 은 효과 종류별 순서(씨뿌리기 8, 독 9, 화상 10, 저주 12, 조임 13 ...)로 모든 포켓몬을 처리한다 -> 두 번째 패스
             bm = st.sides[i].mon
             if bm.protect_n and bm.stall_turn != st.turn:
