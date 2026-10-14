@@ -38,6 +38,7 @@ CASES = {
     "막말내뱉기(사용자가 고른다)": (team(mon("grimmsnarl", "Prankster", ["partingshot"])), team(mon("garchomp", "Rough Skin", IDLE)), [("m", 0), ("m", 0)]),
     "막말내뱉기 vs 클리어바디": (team(mon("grimmsnarl", "Prankster", ["partingshot"])), team(mon("metagross", "Clear Body", IDLE)), [("m", 0), ("m", 0)]),
     "막말내뱉기 vs 미러아머": (team(mon("grimmsnarl", "Prankster", ["partingshot"])), team(mon("corviknight", "Mirror Armor", IDLE)), [("m", 0), ("m", 0)]),
+    "막말내뱉기 vs 매직미러": (team(mon("grimmsnarl", "Prankster", ["partingshot"])), team(mon("hatterene", "Magic Bounce", IDLE)), [("m", 0), ("m", 0)]),
     "드래곤테일(무작위 끌어냄)": (team(mon("dragonite", "Multiscale", ["dragontail"])), team(mon("garchomp", "Rough Skin", IDLE)), [("m", 0), ("m", 0)]),
     "드래곤테일로 기절(쓰러진 쪽이 고른다)": (team(mon("dragonite", "Multiscale", ["dragontail"], "Life Orb")), team(mon("pikachu", "Static", IDLE, hp=0, dfn=0)), [("m", 0), ("m", 0)]),
     "위기회피(발동한 쪽이 고른다)": (team(mon("garchomp", "Rough Skin", ["outrage"], "Life Orb")), team(mon("golisopod", "Emergency Exit", IDLE, hp=0, dfn=0)), [("m", 0), ("m", 0)]),
