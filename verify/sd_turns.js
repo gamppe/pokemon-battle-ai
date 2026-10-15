@@ -40,7 +40,7 @@ function summary(battle) {
       const b = {};
       for (const [k, v] of Object.entries(p.boosts)) if (v) b[k] = v;
       const v = p.isActive && !p.fainted ? Object.keys(p.volatiles).filter(k => VOLS.has(k)).sort().join(',') : '';
-      o[Number(p.name)] = {hp: p.hp, st: p.status || '', b, it: p.item || '', fnt: p.fainted ? 1 : 0, v, pp: p.moveSlots.map(m => m.pp)};
+      o[Number(p.name)] = {hp: p.hp, st: p.fainted ? '' : (p.status || ''), b, it: p.item || '', fnt: p.fainted ? 1 : 0, v, pp: p.moveSlots.map(m => m.pp)};
     }
     return o;
   });
