@@ -732,7 +732,7 @@ class Engine:
                                 if bm.boosts[k] < 0:
                                     bm.boosts[k] = 0
                             self._use_item(st, bm)
-                    self._pending.append(herb)
+                    self._pending.insert(0, herb)                  # 하양허브는 레드카드/탈출버튼보다 먼저 발동한다 (능력치가 내려간 즉시)
         return new - old
 
     def try_status(self, st, side, bm, code, rng, src_side=None, ignore_sub=False):
@@ -2484,7 +2484,9 @@ class Engine:
             def stage_(v, b_):
                 return v * (2 + b_) // 2 if b_ >= 0 else v * 2 // (2 - b_)
             atk = stage_(make_mon(self.data, self.spec_of(D)).stats["atk"], D.boosts.get("atk", 0))
-            gained = self.hp_change(st, i, A, atk, "힘흡수")
+            if norm(A.item) == "bigroot":
+                atk = (atk * 5324 + 2047) // 4096                          # 큰뿌리: 힘흡수 회복량도 x1.3 (Showdown onTryHeal)
+            gained = self.hp_change(st, i, A, -atk if norm(D.ability) == "liquidooze" else atk, "힘흡수")
             before = D.boosts.get("atk", 0)
             self.change_boost(st, o, D, "atk", -1, src_side=i)
             if not gained and D.boosts.get("atk", 0) == before:
