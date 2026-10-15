@@ -1513,6 +1513,7 @@ class Engine:
             return
         counter_fail = norm(mv["name"]) in ("counter", "mirrorcoat", "metalburst") and (
             not st.last_hit[i] or {"counter": "special", "mirrorcoat": "physical"}.get(norm(mv["name"])) == st.last_cat[i])
+        counter_fail = counter_fail or (norm(mv["name"]) == "fling" and not bm.item)      # 던질 도구가 없으면 PrepareHit 에서 실패해 변환자재(프로틴)도 발동하지 않는다
         if norm(bm.ability) in ("protean", "libero") and "protean" not in bm.vol and norm(mv["name"]) != "struggle" and not counter_fail and bm.types != [mv["type"]] \
                 and mv["target"] != "adjacentAlly" and (mv["target"] in NON_FOE_TARGETS or st.sides[1 - i].mon.alive):      # 대상이 없으면 변환기 계열 특성은 발동하지 않는다
             bm.vol.add("protean")
@@ -2305,6 +2306,15 @@ class Engine:
         if rng.random() < 1 / 24:
             r = calc(self.data, sa, sd, mv["name"], F, True, hit=1, proc=False, flags=frozenset({"progress", "real_immunity"}))
         dmg = rng.choice(r["rolls"])
+        if not D.busted and norm(D.ability) == "disguise" and D.sid == "mimikyu":      # 탈: 미래예지도 기술 피해라서 첫 타를 막고 최대 HP 1/8 손해
+            D.busted = True
+            D.stat_over = {}
+            D.types = list(self.data.pokemon[D.sid]["types"])
+            self.hp_change(st, tgt_side, D, -max(1, D.maxhp // 8), "탈")
+            self._say(st, "  미래공격: 탈 벗겨짐")
+            if src.alive and st.sides[1 - tgt_side].mon is src and norm(src.item) == "lifeorb" and norm(src.ability) not in ("magicguard", "sheerforce"):
+                self.hp_change(st, 1 - tgt_side, src, -max(1, src.maxhp // 10), "생명의구슬")        # 피해가 0 이어도 생명의구슬 반동은 있다
+            return
         if D.hp == D.maxhp and dmg >= D.hp and (norm(D.item) == "focussash" or norm(D.ability) == "sturdy"):
             dmg = D.hp - 1
             if norm(D.item) == "focussash" and norm(D.ability) != "sturdy":
