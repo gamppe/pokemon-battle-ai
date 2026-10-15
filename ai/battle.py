@@ -1344,6 +1344,8 @@ class Engine:
                 self._say(st, f"  {bm.name} 일어남")
             elif not (mv and norm(mv["name"]) in ("sleeptalk", "snore")):          # 잠꼬대/코골기는 자는 중에도 쓸 수 있다
                 return False
+        if bm.status == "frz" and mv and "defrost" in mv["flags"]:      # 불꽃 기술(defrost 플래그)을 쓰면 얼음이 풀리고 그대로 공격한다
+            bm.status = None
         if bm.status == "frz":                       # 챔피언스: 시도마다 카운트 -1, 0 이 되거나 25% 확률로 해동
             bm.frz_n -= 1
             if bm.frz_n <= 0 or rng.random() < 0.25:
@@ -1381,6 +1383,9 @@ class Engine:
         mv = self.data.moves[norm(mname)]
         self._say(st, f"[{i}] {bm.name}: {mv['name']}")
         if bm.disabled and norm(mname) == bm.disabled:         # 봉인: 이미 고른 기술도 쓰지 못하고 턴을 잃는다
+            if bm.status in ("slp", "frz") and not self._can_act(st, i, bm, rng, mv):      # 잠듦/얼음(BeforeMove 우선도 10)이 봉인(7)보다 먼저 판정되어 카운트가 줄어든다
+                bm.last_failed = True
+                return
             self._say(st, "  봉인으로 사용 불가")
             self._rampage_abort(st, bm, rng)
             return
