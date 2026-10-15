@@ -629,8 +629,11 @@ class Engine:
                     if cand and holder.alive and st.sides[side].mon is holder and st.sides[o].mon.alive and holder.item:   # 보유자가 이미 끌려 나갔으면 발동하지 않음
                         self._use_item(st, holder)                       # 뿌리박기/흡반으로 못 끌려 나가도 레드카드는 소모된다
                         if "ingrain" not in st.sides[o].mon.vol and norm(st.sides[o].mon.ability) != "suctioncups":
-                            self._switch_in(st, o, self._rng, to=self._rng.choice(cand))
+                            self._switch_in(st, o, self._rng, to=self._rng.choice(cand), drag=True)
                 self._pending.append(red)
+                cand_r = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
+                if cand_r and bm.alive and "ingrain" not in st.sides[o].mon.vol and norm(st.sides[o].mon.ability) != "suctioncups":
+                    self._red_attacker = o                              # 레드카드가 발동하면 공격자는 forceSwitchFlag 가 서서 생명의구슬 반동을 받지 않는다
                 applied = False
             elif code == "self_switch_out":
                 def eject(holder=bm):
@@ -873,7 +876,7 @@ class Engine:
         return "Flying" not in self.types_of(bm) and norm(bm.ability) not in ("levitate", "eelevate") and norm(bm.item) != "airballoon"
 
     # ───────────────────────── 교체 ─────────────────────────
-    def _switch_in(self, st, side, rng, to=None, carry=False, defer=False):
+    def _switch_in(self, st, side, rng, to=None, carry=False, defer=False, drag=False):
         S = st.sides[side]
         self._tr(st, "switch", side)
         passed = None
@@ -958,7 +961,7 @@ class Engine:
             self._update_berries(st, rng)                        # 긴장감 보유자가 나가면 막혀 있던 열매를 바로 먹는다
             self._opportunist_flush(st)
             if bm.alive and S.mon is bm and norm(bm.ability) in ("emergencyexit", "wimpout") and hp_in * 2 > bm.maxhp >= bm.hp * 2 \
-                    and st.winner is None and not defer:                      # 등장하며 해저드로 절반 이하가 되면 바로 다시 교체한다
+                    and st.winner is None and not defer and not drag:      # 등장하며 해저드로 절반 이하가 되면 바로 다시 교체한다 (끌려 들어온 경우는 제외: Showdown)
                 cand_ = [j for j in S.alive_idx() if j != S.active]
                 if cand_:
                     self._say(st, f"  {bm.name} 비상탈출")
@@ -993,7 +996,7 @@ class Engine:
                     continue
                 bm.syrup = True
             if r["kind"] == "stat_stage" and r["target"] == "foe":
-                if not foe.alive or "substitute" in foe.vol:
+                if not foe.alive or foe.sub > 0 or "substitute" in foe.vol:           # 위협 등은 대타 뒤의 상대에게 통하지 않는다 (-immune)
                     continue
                 if r["label"].endswith("Intimidate"):
                     if any(r2["hook"] == "immunity" and r2["code"] == "ability:intimidate" for r2 in self.data.ability_fx.get(norm(foe.ability), [])):
@@ -1203,6 +1206,7 @@ class Engine:
             mons0 = [st.sides[0].mon, st.sides[1].mon]
             self._act0 = (mons0, hp0)
             self._pivot_eff = None
+            self._red_attacker = None
             self._do_action(st, i, acts[i], acts, rng, switch_policy)
             pend, self._pending = self._pending, []
             for fn in pend:
@@ -1216,7 +1220,13 @@ class Engine:
             self._eot = True
             self._end_of_turn(st, rng)
             self._check_winner(st)
-            self._emergency_exit(st, mons0, hp0, rng, switch_policy)
+            held = self._emergency_exit(st, mons0, hp0, rng, switch_policy, hold=True)
+            if held:       # 턴 끝 비상탈출 교체와 쓰러진 자리의 교체는 동시에 이뤄지고, 등장 효과(위협 등)는 모두 들어온 뒤 속도 순으로 발동한다
+                dead_ = [i for i in (0, 1) if st.winner is None and not st.sides[i].mon.alive and st.sides[i].alive_idx()]
+                effs_ = list(held) + [(i, self._replace(st, i, rng, switch_policy, defer=True)) for i in dead_]
+                for side_, fn in sorted(effs_, key=lambda x: ((1 if st.trick_room else -1) * self.speed_of(st, x[0]), rng.random())):
+                    if fn:
+                        fn()
         for _ in range(6):      # 교체해 들어오자마자 해저드로 쓰러지면 바로 다음 포켓몬을 낸다
             self._check_winner(st)
             dead = [i for i in (0, 1) if st.winner is None and not st.sides[i].mon.alive and st.sides[i].alive_idx()]
@@ -1243,13 +1253,15 @@ class Engine:
         self._eot = False
         return st
 
-    def _emergency_exit(self, st, mons0, hp0, rng, switch_policy):
+    def _emergency_exit(self, st, mons0, hp0, rng, switch_policy, hold=False):
         """유턴 교체와 비상탈출 교체가 같은 행동에서 겹치면 두 교체가 모두 끝난 뒤 등장 효과(위협 등)가 속도 순으로 발동한다"""
         pe = getattr(self, "_pivot_eff", None)
         self._pivot_eff = None
         self._ee_effs = [pe] if pe else []
-        self._emergency_exit0(st, mons0, hp0, rng, switch_policy, defer=bool(pe))
+        self._emergency_exit0(st, mons0, hp0, rng, switch_policy, defer=bool(pe) or hold)
         effs, self._ee_effs = self._ee_effs, []
+        if hold:
+            return effs
         for side_, fn in sorted(effs, key=lambda x: ((1 if st.trick_room else -1) * self.speed_of(st, x[0]), rng.random())):
             if fn:
                 fn()
@@ -1712,6 +1724,8 @@ class Engine:
         if mv["ohko"]:
             return rng.random() < 0.3
         a = acc
+        if mv["name"].lower() in ("thunder", "hurricane") and self.wx(st) == "sun":
+            a = 50                                       # 쾌청: 번개/폭풍의 명중률은 50% (Showdown onModifyMove)
         if st.gravity:
             a = a * (6840 / 4096)                        # 중력: 명중률 상승
         if dab == "tangledfeet" and "confusion" in D.vol and norm(A.ability) not in MOLD_BREAKERS:
@@ -1920,8 +1934,8 @@ class Engine:
                     D.vol.add("flinch")                           # 왕의징표석/날카로운이빨: 타격마다 10% 풀죽음 (다단 기술은 타마다)
             deferred = (eff_mv, dmg, hp_before) if nhits == 1 else None
             self._on_hit(st, i, o, eff_mv, rng, dmg, hp_before, crit, defer=nhits == 1)
-            if key in ("thief", "covet") and A.alive and not A.item and D.item and (norm(D.ability) != "stickyhold" or not D.alive) and not (
-                    self._own_stone(D)):
+            if key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.item) != "airballoon" and (norm(D.ability) != "stickyhold" or not D.alive) and not (
+                    self._own_stone(D)):             # 풍선은 맞는 순간(DamagingHit) 터지므로 도둑질(AfterHit)로 뺏을 수 없다
                 A.item, D.item = D.item, ""                       # 도둑질/탐내기: 접촉 반격(울퉁불퉁멧 등) 뒤, 열매 소비보다 먼저 도구를 빼앗는다
         if not landed:
             return
@@ -1979,9 +1993,9 @@ class Engine:
                 self.hp_change(st, i, A, -math.floor(A.maxhp * r["params"]["hp_frac"] + 0.5), mv["name"])
             elif r["params"].get("effect") == "clear_terrain" and landed and st.terrain:       # 스틸롤러/아이스스피너: 맞히면 필드를 없앤다 (대타 포함)
                 st.terrain, st.terrain_turns = None, 0
-            elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard" and A.alive and norm(A.ability) != "sheerforce":      # 대타를 때려도 깐다 (onAfterSubDamage)
+            elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard" and (A.alive or not hit_sub) and norm(A.ability) != "sheerforce":      # 대타를 때려도 깐다 (onAfterSubDamage 는 사용자가 살아 있어야 하지만, 일반 타격 onAfterHit 은 반격으로 쓰러져도 깐다)
                 self._side_condition(st, o, {"stealth_rock": "stealthrock"}.get(r["params"]["hazard"], r["params"]["hazard"]), swap=True)
-        if A.alive and landed and st.sides[i].mon is A:           # 생명의구슬/조개껍질방울(AfterMoveSecondarySelf)은 끌어내기/유턴 교체보다 먼저
+        if A.alive and landed and st.sides[i].mon is A and getattr(self, "_red_attacker", None) != i:           # 생명의구슬/조개껍질방울(AfterMoveSecondarySelf)은 끌어내기/유턴 교체보다 먼저 (레드카드로 끌려나갈 때는 반동 없음)
             self._no_flinch_item = True
             try:
                 if not (norm(A.ability) == "sheerforce" and mv["has_secondary"] and norm(A.item) == "lifeorb"):     # 힘센손: 부가효과가 사라진 기술은 생명의구슬 반동이 없다
@@ -1991,7 +2005,7 @@ class Engine:
         if mv["force_switch"] and not mv["self_switch"] and D.alive and not hit_sub and D.sub == 0 and norm(D.ability) != "suctioncups" and "ingrain" not in D.vol and not (norm(D.ability) == "guarddog" and norm(A.ability) not in MOLD_BREAKERS):
             cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]        # 드래곤테일 등: 끌어내기가 레드카드/탈출버튼보다 먼저
             if cand:
-                self._switch_in(st, o, rng, to=rng.choice(cand))
+                self._switch_in(st, o, rng, to=rng.choice(cand), drag=True)
         pend, self._pending = self._pending, []
         for fn in pend:
             fn()
@@ -2083,12 +2097,14 @@ class Engine:
             A_.disabled, A_.disable_n = norm(mv["name"]), 4
             self._mental_herb(st, A_)
         dab_ = norm(D.ability)
+        swapped_ = False
         if dab_ in ("mummy", "lingeringaroma", "wanderingspirit") and "contact" in mv["flags"] and A_.alive:      # 접촉한 공격자의 특성을 바꾼다 (쓰러뜨려도 발동)
             flags_ = lambda x_, f_: f_ in self.abil_flags.get(norm(x_.ability), [])
             if dab_ == "wanderingspirit":
                 if not flags_(A_, "failskillswap") and not flags_(D, "failskillswap"):
                     A_.abil_orig, D.abil_orig = A_.abil_orig or A_.ability, D.abil_orig or D.ability
                     A_.ability, D.ability = D.ability, A_.ability
+                    swapped_ = True                       # 맞은 순간 모아 둔 핸들러만 돈다: 새로 받은 특성(까칠한피부 등)의 반격은 이번 타격에 발동하지 않는다
                     self._run_switch_in(st, i, A_, rng, only="ability")
                     self._run_switch_in(st, o, D, rng, only="ability")
             elif not flags_(A_, "cantsuppress") and norm(A_.ability) != dab_:
@@ -2100,7 +2116,7 @@ class Engine:
             self.try_status(st, i, st.sides[i].mon, "brn", rng, src_side=o, ignore_sub=True)
         self._defer_balloon = defer                         # 단일 타격의 풍선은 부가효과 뒤에 터진다
         try:
-            self.run_hook(st, o, D, "on_hit_taken", rng, mv=mv, dmg=dmg, foe_side=i)
+            self.run_hook(st, o, D, "on_hit_taken", rng, mv=mv, dmg=dmg, foe_side=i, only="item" if swapped_ else None)
         finally:
             self._defer_balloon = False
         if D.alive:
@@ -2114,7 +2130,7 @@ class Engine:
         self.run_hook(st, o, D, "on_faint", rng, mv=mv, dmg=dmg, foe_side=i)
         if A.alive and norm(mv["name"]) == "fellstinger":
             self.change_boost(st, i, A, "atk", 3)                       # 독침(Fell Stinger): 쓰러뜨리면 공격 +3
-        if A.alive:
+        if A.alive and st.sides[o].alive_idx():           # 상대의 마지막 포켓몬을 쓰러뜨려 배틀이 끝나면 자기최면(Moxie) 등은 발동하지 않는다 (Showdown)
             self.run_hook(st, i, A, "on_ko", rng, mv=mv, dmg=dmg, foe_side=o)
 
     def _contact_punish(self, st, i, o, mv, rng):
@@ -2766,7 +2782,7 @@ class Engine:
                 A.hp, D.hp = min(A.maxhp, avg), min(D.maxhp, avg)
             return
         if key == "defog":
-            if (D.sub == 0 or "bypasssub" in mv["flags"]):
+            if D.sub == 0 or norm(A.ability) == "infiltrator":        # Showdown defog: !substitute || move.infiltrates (bypasssub 플래그만으로는 대타를 뚫지 못한다)
                 self.change_boost(st, o, D, "evasion", -1, src_side=i)
             for sd in (st.sides[o], st.sides[i]):
                 for h in ("spikes", "toxicspikes", "stealthrock", "stickyweb"):
@@ -2794,7 +2810,7 @@ class Engine:
         if mv["force_switch"]:
             cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
             if cand and D.alive and norm(D.ability) not in ("suctioncups",) and "ingrain" not in D.vol and not (norm(D.ability) == "guarddog" and norm(A.ability) not in MOLD_BREAKERS):
-                self._switch_in(st, o, rng, to=rng.choice(cand))
+                self._switch_in(st, o, rng, to=rng.choice(cand), drag=True)
             return
         for e in mv["effects"]:
             if e["trigger_type"] != "primary":
@@ -2913,7 +2929,7 @@ class Engine:
             if bm.alive and self.wx(st) == "sand" and bm.charge not in ("dig", "dive") and not any(t in ("Rock", "Ground", "Steel") for t in bm.types) and \
                     norm(bm.ability) not in ("magicguard", "overcoat", "sandveil", "sandrush", "sandforce") and norm(bm.item) != "safetygoggles":
                 self.hp_change(st, i, bm, -max(1, bm.maxhp // 16), "모래바람")
-                self._hp_berry_update(st, rng)                   # Showdown fieldEvent: 효과 하나가 끝날 때마다 Update (HP 열매)
+                self._hp_berry_update(st, rng)                   # Showdown eachEvent('Weather') 뒤의 Update (HP 열매). 다른 잔여 효과는 끝난 뒤 한 번만 Update
         for i in order:                                       # 효과 종류별로 모든 포켓몬을 처리한다 (날씨 1 -> 미래예지/희망사항 -> 필드·도구 -> 씨뿌리기 8 -> 독/화상 9~10)
             bm = st.sides[i].mon
             fut = st.sides[i].future
@@ -2936,7 +2952,6 @@ class Engine:
                 continue
             if st.terrain == "grassy" and bm.alive and self._grounded(bm):
                 self.hp_change(st, i, bm, max(1, bm.maxhp // 16), "그래스필드")
-                self._hp_berry_update(st, rng)
             if bm.alive:
                 late_ab = ("Speed Boost", "Moody", "Bad Dreams")          # Showdown residual order 28: 먹다남은음식(5) 등 도구보다 늦다
                 for src, r in sorted(self.rows(bm, "turn_end"), key=lambda sr: sr[0] == "ability" and sr[1]["label"].endswith(late_ab)):
@@ -2948,7 +2963,6 @@ class Engine:
                         continue
                     if r["kind"] in ("heal_frac", "damage_frac", "cure_status", "stat_stage"):
                         self.apply_row(st, r["label"], r, i, bm, rng)
-                        self._hp_berry_update(st, rng)
                         if not bm.alive:
                             break
             if bm.alive and norm(bm.item) == "blacksludge":
@@ -2981,7 +2995,6 @@ class Engine:
                     bm.tox = min(15, bm.tox + 1)
                 elif bm.status == "brn":
                     self.hp_change(st, i, bm, -max(1, bm.maxhp // (32 if norm(bm.ability) == "heatproof" else 16)), "화상")
-                self._hp_berry_update(st, rng)
         for i in order:              # Showdown 은 효과 종류별 순서(씨뿌리기 8, 독 9, 화상 10, 저주 12, 조임 13 ...)로 모든 포켓몬을 처리한다 -> 두 번째 패스
             bm = st.sides[i].mon
             if bm.protect_n and bm.stall_turn != st.turn:
