@@ -2226,12 +2226,16 @@ class Engine:
                 if tgt.taunt == 0 and not immune:
                     tgt.taunt = 3 + (1 if tgt.active_turns and tgt.moved else 0)
                     self._mental_herb(st, tgt)
+                elif e["trigger_type"] == "primary":
+                    self._sfail = True                      # 이미 도발 중이거나 면역이면 기술 실패 (Temper Flare 조건)
             elif code == "torment":
                 immune = any((r["code"] or "").startswith("volatile:") and "torment" in r["code"]
                              for r in self.data.ability_fx.get(norm(tgt.ability), []) if r["hook"] == "immunity")
                 if "torment" not in tgt.vol and not immune:
                     tgt.vol.add("torment")
                     self._mental_herb(st, tgt)
+                elif e["trigger_type"] == "primary":
+                    self._sfail = True
             elif code == "throatchop":
                 tgt.throat = tgt.throat or 2          # 이미 걸려 있으면 갱신되지 않는다
             elif code == "healblock":
