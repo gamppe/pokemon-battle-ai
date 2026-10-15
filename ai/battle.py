@@ -633,7 +633,7 @@ class Engine:
                 self._pending.append(red)
                 cand_r = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]
                 if cand_r and bm.alive and "ingrain" not in st.sides[o].mon.vol and norm(st.sides[o].mon.ability) != "suctioncups":
-                    self._red_attacker = o                              # 레드카드가 발동하면 공격자는 forceSwitchFlag 가 서서 생명의구슬 반동을 받지 않는다
+                    self._red_attacker, self._red_holder = o, bm                              # 레드카드가 발동하면 공격자는 forceSwitchFlag 가 서서 생명의구슬 반동을 받지 않는다
                 applied = False
             elif code == "self_switch_out":
                 def eject(holder=bm):
@@ -1933,6 +1933,10 @@ class Engine:
                 if rng.random() < 0.1 and not D.moved and norm(D.ability) not in ("innerfocus", "shielddust") and norm(A.ability) != "sheerforce":
                     D.vol.add("flinch")                           # 왕의징표석/날카로운이빨: 타격마다 10% 풀죽음 (다단 기술은 타마다)
             deferred = (eff_mv, dmg, hp_before) if nhits == 1 else None
+            if key in ("doubleshock", "burnup") and A.alive:          # 자기 타입을 잃는 효과는 접촉 반격(정전기 등)보다 먼저 일어난다 (Showdown: 타입이 바뀐 뒤 정전기가 발동)
+                lost_ = "Electric" if key == "doubleshock" else "Fire"
+                if lost_ in A.types:
+                    A.types = [t for t in A.types if t != lost_] or ["Typeless"]
             self._on_hit(st, i, o, eff_mv, rng, dmg, hp_before, crit, defer=nhits == 1)
             if key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.item) != "airballoon" and (norm(D.ability) != "stickyhold" or not D.alive) and not (
                     self._own_stone(D)):             # 풍선은 맞는 순간(DamagingHit) 터지므로 도둑질(AfterHit)로 뺏을 수 없다
@@ -1995,7 +1999,9 @@ class Engine:
                 st.terrain, st.terrain_turns = None, 0
             elif r["type"] == "field_manipulation" and r["params"].get("effect") == "set_hazard" and (A.alive or not hit_sub) and norm(A.ability) != "sheerforce":      # 대타를 때려도 깐다 (onAfterSubDamage 는 사용자가 살아 있어야 하지만, 일반 타격 onAfterHit 은 반격으로 쓰러져도 깐다)
                 self._side_condition(st, o, {"stealth_rock": "stealthrock"}.get(r["params"]["hazard"], r["params"]["hazard"]), swap=True)
-        if A.alive and landed and st.sides[i].mon is A and getattr(self, "_red_attacker", None) != i:           # 생명의구슬/조개껍질방울(AfterMoveSecondarySelf)은 끌어내기/유턴 교체보다 먼저 (레드카드로 끌려나갈 때는 반동 없음)
+        rh_ = getattr(self, "_red_holder", None)
+        red_active_ = getattr(self, "_red_attacker", None) == i and rh_ is not None and rh_.alive and bool(rh_.item)      # 탁쳐서떨구기 등으로 레드카드가 먼저 없어졌으면 발동하지 않는다
+        if A.alive and landed and st.sides[i].mon is A and not red_active_:           # 생명의구슬/조개껍질방울(AfterMoveSecondarySelf)은 끌어내기/유턴 교체보다 먼저 (레드카드로 끌려나갈 때는 반동 없음)
             self._no_flinch_item = True
             try:
                 if not (norm(A.ability) == "sheerforce" and mv["has_secondary"] and norm(A.item) == "lifeorb"):     # 힘센손: 부가효과가 사라진 기술은 생명의구슬 반동이 없다
@@ -2009,7 +2015,7 @@ class Engine:
         pend, self._pending = self._pending, []
         for fn in pend:
             fn()
-        if key == "struggle" and A.alive:
+        if key == "struggle" and A.alive and not self._zero_hit:        # 변장이 막아 피해가 0 이면 발버둥 반동도 없다 (Showdown)
             self.hp_change(st, i, A, -max(1, math.floor(A.maxhp / 4 + 0.5)), "발버둥")        # Showdown: Math.round(maxhp / 4)
         if landed and not hit_sub and A.alive and D.alive and st.sides[i].mon is A and st.sides[o].mon is D:
             if norm(D.ability) == "pickpocket" and "contact" in mv["flags"] and not D.item and A.item and norm(A.ability) != "stickyhold"                     and not self._own_stone(A):                           # pickpocket: 접촉당한 뒤 빈손이면 공격자의 도구를 훔친다
@@ -2022,10 +2028,6 @@ class Engine:
                     and not self._own_stone(D):                           # magician: 기술을 맞힌 상대의 도구를 빼앗는다
                 A.item, D.item = D.item, ""
                 self._berry_now(st, i, A, rng)                                            # 훔친 열매는 조건이 맞으면 바로 먹는다
-        if key in ("doubleshock", "burnup") and A.alive:
-            lost = "Electric" if key == "doubleshock" else "Fire"
-            if lost in A.types:
-                A.types = [t for t in A.types if t != lost] or ["Typeless"]
         if key in ("rapidspin", "mortalspin", "tidyup") and A.alive:
             st.sides[i].hazards.clear()
             A.vol.discard("leechseed")
@@ -2093,7 +2095,7 @@ class Engine:
             D.item = ""                                    # 단일 타격은 부가효과 뒤에 터진다 (아래 _damage_move)
         A_ = st.sides[i].mon
         if norm(D.ability) == "cursedbody" and A_.alive and not A_.disabled and norm(mv["name"]) != "struggle" \
-                and norm(A_.ability) not in MOLD_BREAKERS and rng.random() < 0.3:        # 저주받은바디: 맞으면 30% 로 공격한 기술을 봉인
+                and rng.random() < 0.3:        # 저주받은바디: 맞으면 30% 로 공격한 기술을 봉인 (breakable 이 아니라서 틀깨기에도 발동: Showdown flags {})
             A_.disabled, A_.disable_n = norm(mv["name"]), 4
             self._mental_herb(st, A_)
         dab_ = norm(D.ability)
@@ -2457,8 +2459,8 @@ class Engine:
             hit = False
             for S_ in st.sides:
                 m_ = S_.mon
-                if m_.alive and not m_.perish and norm(m_.ability) != "soundproof":
-                    m_.perish, hit = 4, True
+                if m_.alive and not m_.perish and norm(m_.ability) != "soundproof" and not (norm(m_.ability) == "goodasgold" and m_ is not A):
+                    m_.perish, hit = 4, True                    # 방음 / 상대 기술을 막는 황금몸(Good as Gold) 은 면역
             if not hit:
                 self._sfail = True
             return
@@ -2888,6 +2890,7 @@ class Engine:
         cand = [j for j in st.sides[i].alive_idx() if j != st.sides[i].active]
         if not cand or st.winner is not None:
             return
+        self._flush_pending()                       # 막말내뱉기 등: 능력치가 내려가 하양허브가 발동하는 것은 교체 전에 처리된다
         j = self._policy(st, i) if self._policy else cand[0]
         self._switch_in(st, i, rng, to=j if j in cand else cand[0], carry=carry)
 

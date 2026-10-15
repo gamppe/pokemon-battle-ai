@@ -5,7 +5,7 @@ from ai.gamedata import GameData, connect, norm
 from ai.battle import Engine
 HERE = os.path.dirname(os.path.abspath(__file__)); OUT = os.path.join(HERE, "out")
 sid = sys.argv[1]; seed = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-sc = next(s for s in json.load(open(os.path.join(OUT, "turns_in.json"))) if s["id"] == sid)
+sc = next(s for s in json.load(open(os.path.join(OUT, os.environ.get("DBG_IN","turns_in.json")))) if s["id"] == sid)
 sc["runs"] = 1
 json.dump([sc], open(os.path.join(OUT, "dbg_in.json"), "w"))
 env = dict(os.environ, SD_LOG="1")
