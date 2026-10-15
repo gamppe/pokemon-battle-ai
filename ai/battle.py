@@ -2434,20 +2434,26 @@ class Engine:
             if "powder" in mv["flags"] and ("Grass" in D.types or norm(D.ability) == "overcoat" or norm(D.item) == "safetygoggles"):
                 return
             if norm(A.ability) == "prankster" and "Dark" in D.types:
+                self._sfail = True
                 return
             if D.sub > 0 and "bypasssub" not in mv["flags"] and norm(A.ability) != "infiltrator":
+                self._sfail = True
                 return
             for r in mv["rules"]:
                 if r["type"] == "target_immunity" and key != "toxicthread":        # 독실(독 면역이어도 속도 하락은 들어간다)
                     p_ = r["params"]
                     if any(t in self.types_of(D) for t in p_.get("immune_types", [])):
+                        self._sfail = True                      # 면역도 '실패'로 기록된다 (Temper Flare/Stomping Tantrum 의 직전 기술 실패 조건)
                         return
                     if p_.get("type_chart_applies") and self._chart_immune(mv, D):
+                        self._sfail = True
                         return
                     if norm(D.ability) in {norm(x) for x in p_.get("immune_abilities", [])}:
+                        self._sfail = True
                         return
             if not self._hits(st, i, o, mv, rng, False):
                 self._say(st, "  빗나감")
+                self._sfail = True
                 return
         handled = False
         if key in ("soak", "magicpowder", "forestscurse", "trickortreat"):                 # 대상의 타입 변경 (이미 같은 상태면 실패)
