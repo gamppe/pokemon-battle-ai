@@ -21,9 +21,9 @@ class ObsEngine(Engine):
         if evs is not None:
             evs.append(ev)
 
-    def _switch_in(self, st, side, rng, to=None, carry=False):
+    def _switch_in(self, st, side, rng, to=None, carry=False, **kw):
         self._rec(st, ("switch_in", side))
-        return super()._switch_in(st, side, rng, to=to, carry=carry)
+        return super()._switch_in(st, side, rng, to=to, carry=carry, **kw)
 
     def _do_action(self, st, i, act, acts, rng, switch_policy):
         self._rec(st, ("act", i))
@@ -35,10 +35,10 @@ class ObsEngine(Engine):
             self._rec(st, ("trigger", side, src))
         return ok
 
-    def _run_switch_in(self, st, side, bm, rng):
+    def _run_switch_in(self, st, side, bm, rng, only=None):
         foe = st.sides[1 - side].mon
         before = dict(foe.boosts)
-        super()._run_switch_in(st, side, bm, rng)
+        super()._run_switch_in(st, side, bm, rng, only=only)
         if foe.boosts != before:                    # 위협/끈적끈적 시럽 등 상대 능력치를 바꾸는 등장 특성
             for src, r in self.rows(bm, "switch_in"):
                 if r["kind"] == "stat_stage" and r["target"] == "foe":

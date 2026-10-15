@@ -21,25 +21,45 @@ from .teams import MetaTeams, ReplayTeams
 _G = {}
 
 
-def _init(snap, teams, ckpt=None):
+def _init(snap, teams, ckpt=None, ckpt2=None):
     conn = connect()
     data = GameData(conn)
     meta = Meta(conn, data, snap)
     src = ReplayTeams(conn, data, meta) if teams == "replay" else MetaTeams(meta)
     eng = ObsEngine(data)
     ev = ValueEvaluator(eng, ckpt, os.path.join(os.path.dirname(ckpt), "vocab.json"), device="cpu") if ckpt else None
-    _G.update(data=data, meta=meta, eng=eng, src=src, ev=ev)
+    ev2 = ValueEvaluator(eng, ckpt2, os.path.join(os.path.dirname(ckpt2), "vocab.json"), device="cpu") if ckpt2 else None
+    _G.update(data=data, meta=meta, eng=eng, src=src, ev=ev, ev2=ev2)
+
+
+def _override(spec, true, what):
+    """정보 실험: 상대 세트 표본의 일부(또는 전부)를 정답으로 바꾼다"""
+    spec = dict(spec)
+    if what in ("oracle", "know_item"):
+        spec["item"] = true["item"]
+    if what in ("oracle", "know_ability"):
+        spec["ability"] = true["ability"]
+    if what in ("oracle", "know_spread"):
+        spec["nature"], spec["sp"] = true["nature"], dict(true["sp"])
+    if what in ("oracle", "know_moves"):
+        spec["moves"] = list(true["moves"])
+    return spec
 
 
 class Player:
-    def __init__(self, side, kind, opp_species, params, seed):
+    def __init__(self, side, kind, opp_species, params, seed, opp_team=None, info="post"):
         data, meta = _G["data"], _G["meta"]
-        self.side, self.kind, self.params = side, kind, params
+        self.side, self.kind, self.params, self.info = side, kind, params, info
         self.rng = random.Random(seed)
         self.models = {i: OppModel(meta, data, sid) for i, sid in enumerate(opp_species)}
         self.ev_n = 0
+        if info not in ("post", "prior") and opp_team:           # oracle / know_*: 상대의 진짜 세트(일부)를 안다고 가정
+            for i, m in self.models.items():
+                m.sample_set = (lambda rng, m=m, t=opp_team[i], w=info: _override(type(m).sample_set(m, rng), t, w))
 
     def start(self, st):
+        if self.info == "prior":
+            return
         feed_events(self.models[st.sides[1 - self.side].active], _G["data"], getattr(st, "events", []) or [], 1 - self.side, True, None, None)
         self.ev_n = len(getattr(st, "events", []) or [])
 
@@ -52,8 +72,8 @@ class Player:
         if self.kind == "flat":
             ev = evaluate_hidden(eng, st, me, alive, n_worlds=w, rollouts=r, seed=self.rng.randrange(10 ** 9))
             return max(ev, key=ev.get)
-        if self.kind == "nashv":          # 가치망 1턴 탐색 + 내시 균형
-            strat = nash_value_hidden(eng, _G["ev"], st, me, alive, worlds=w, samples=r, seed=self.rng.randrange(10 ** 9))
+        if self.kind in ("nashv", "nashv2"):          # 가치망 1턴 탐색 + 내시 균형 (nashv2 = 두 번째 가치망, --ckpt2)
+            strat = nash_value_hidden(eng, _G["ev2"] if self.kind == "nashv2" else _G["ev"], st, me, alive, worlds=w, samples=r, seed=self.rng.randrange(10 ** 9))
             return pick(strat, self.rng, self.params.get("pick", "sample"))
         if self.kind == "nashd":          # 가치망 다턴 탐색 (후회 기준 가지치기)
             strat = nash_deep_hidden(eng, _G["ev"], st, me, alive, depth=self.params["depth"], worlds=w, samples=r,
@@ -71,6 +91,8 @@ class Player:
         self.w0, self.t0, self.n0 = st.weather, st.terrain, len(st.log)
 
     def after(self, st):
+        if self.info == "prior":
+            return
         data = _G["data"]
         opp = 1 - self.side
         evs = (getattr(st, "events", []) or [])[self.ev_n:]
@@ -97,8 +119,9 @@ def play(job):
         t0, t1 = src.random_team(rng), src.random_team(rng)
         st = eng.new_state(t0, t1, log=True, rng=rng)
         pol = make_switch_policy(eng, rng)
-        players = [Player(0, kinds[0], [s["sid"] for s in t1], params, gseed * 3 + 1),
-                   Player(1, kinds[1], [s["sid"] for s in t0], params, gseed * 3 + 2)]
+        info = [params.get("info", "post") if kinds[k] == params.get("info_kind") else "post" for k in (0, 1)]
+        players = [Player(0, kinds[0], [s["sid"] for s in t1], params, gseed * 3 + 1, t1, info[0]),
+                   Player(1, kinds[1], [s["sid"] for s in t0], params, gseed * 3 + 2, t0, info[1])]
         for p in players:
             p.start(st)
         while st.winner is None and st.turn < 60:
@@ -125,18 +148,21 @@ def main():
     ap.add_argument("--depth", type=int, default=3)
     ap.add_argument("--kmax", type=int, default=3)
     ap.add_argument("--delta", type=float, default=0.08)
+    ap.add_argument("--info", default="post", choices=["post", "prior", "oracle", "know_item", "know_moves", "know_spread", "know_ability"],
+                    help="--a 에이전트가 가진 상대 정보 수준 (정보 가치 실험)")
     ap.add_argument("--snap", type=int, default=33)
     ap.add_argument("--teams", default="meta", choices=["meta", "replay"])
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--ckpt", default="data/value_v2/value_net.pt", help="nashv 에이전트가 쓸 가치망")
+    ap.add_argument("--ckpt2", default=None, help="nashv2 에이전트가 쓸 가치망")
     a = ap.parse_args()
-    params = dict(worlds=a.worlds, rollouts=a.rollouts, pick=a.pick, depth=a.depth, kmax=a.kmax, delta=a.delta)
+    params = dict(worlds=a.worlds, rollouts=a.rollouts, pick=a.pick, depth=a.depth, kmax=a.kmax, delta=a.delta, info=a.info, info_kind=a.a)
     jobs = []
     for g in range(a.games):
         jobs.append(((a.a, a.b), 2000 + g, params))      # A 가 0번 자리
         jobs.append(((a.b, a.a), 2000 + g, params))      # A 가 1번 자리 (팀은 그대로)
     wins, n, errs = 0.0, 0, 0
-    with cf.ProcessPoolExecutor(max_workers=a.workers, initializer=_init, initargs=(a.snap, a.teams, a.ckpt)) as ex:
+    with cf.ProcessPoolExecutor(max_workers=a.workers, initializer=_init, initargs=(a.snap, a.teams, a.ckpt, a.ckpt2)) as ex:
         for k, (kinds, g, res) in enumerate(ex.map(play, jobs, chunksize=1)):
             if isinstance(res, str):
                 errs += 1
