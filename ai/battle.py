@@ -641,7 +641,10 @@ class Engine:
                     if cand and holder.alive and st.sides[side].mon is holder and holder.item:
                         self._use_item(st, holder)
                         j = self._policy(st, side) if self._policy else cand[0]
-                        self._switch_in(st, side, self._rng, to=j if j in cand else cand[0])
+                        if getattr(self, "_pivot_coming", False):       # 같은 행동의 유턴 교체와 탈출버튼 교체는 둘 다 들어온 뒤 등장 효과를 처리한다
+                            self._eject_eff = (side, self._switch_in(st, side, self._rng, to=j if j in cand else cand[0], defer=True))
+                        else:
+                            self._switch_in(st, side, self._rng, to=j if j in cand else cand[0])
                 self._pending.append(eject)
                 applied = False
             elif code == "copy_foe_ability":                     # 트레이스: 등장할 때 상대 특성을 복사하고 그 특성의 등장 효과도 발동한다
@@ -1207,6 +1210,8 @@ class Engine:
             self._act0 = (mons0, hp0)
             self._pivot_eff = None
             self._red_attacker = None
+            self._eject_eff = None
+            self._pivot_coming = False
             self._do_action(st, i, acts[i], acts, rng, switch_policy)
             pend, self._pending = self._pending, []
             for fn in pend:
@@ -1257,8 +1262,10 @@ class Engine:
         """유턴 교체와 비상탈출 교체가 같은 행동에서 겹치면 두 교체가 모두 끝난 뒤 등장 효과(위협 등)가 속도 순으로 발동한다"""
         pe = getattr(self, "_pivot_eff", None)
         self._pivot_eff = None
-        self._ee_effs = [pe] if pe else []
-        self._emergency_exit0(st, mons0, hp0, rng, switch_policy, defer=bool(pe) or hold)
+        ej = getattr(self, "_eject_eff", None)
+        self._eject_eff = None
+        self._ee_effs = [x for x in (pe, ej) if x]
+        self._emergency_exit0(st, mons0, hp0, rng, switch_policy, defer=bool(pe) or bool(ej) or hold)
         effs, self._ee_effs = self._ee_effs, []
         if hold:
             return effs
@@ -2012,9 +2019,11 @@ class Engine:
             cand = [j for j in st.sides[o].alive_idx() if j != st.sides[o].active]        # 드래곤테일 등: 끌어내기가 레드카드/탈출버튼보다 먼저
             if cand:
                 self._switch_in(st, o, rng, to=rng.choice(cand), drag=True)
+        self._pivot_coming = bool(mv["self_switch"] and A.alive and st.winner is None)
         pend, self._pending = self._pending, []
         for fn in pend:
             fn()
+        self._pivot_coming = False
         if key == "struggle" and A.alive and not self._zero_hit:        # 변장이 막아 피해가 0 이면 발버둥 반동도 없다 (Showdown)
             self.hp_change(st, i, A, -max(1, math.floor(A.maxhp / 4 + 0.5)), "발버둥")        # Showdown: Math.round(maxhp / 4)
         if landed and not hit_sub and A.alive and D.alive and st.sides[i].mon is A and st.sides[o].mon is D:
@@ -2043,7 +2052,7 @@ class Engine:
                 ee_ = m0_ is not None and any(                   # 상대가 이 공격으로 비상탈출이 발동하면 두 교체의 등장 효과를 한꺼번에 처리한다
                     k_ != i and m0_[k_] is st.sides[k_].mon and st.sides[k_].mon.alive and norm(st.sides[k_].mon.ability) in ("emergencyexit", "wimpout")
                     and h0_[k_] * 2 > st.sides[k_].mon.maxhp >= st.sides[k_].mon.hp * 2 and len(st.sides[k_].alive_idx()) > 1 for k_ in (0, 1))
-                if ee_:
+                if ee_ or getattr(self, "_eject_eff", None):
                     self._pivot_eff = (i, self._switch_in(st, i, rng, to=j, defer=True))
                 else:
                     self._switch_in(st, i, rng, to=j)
@@ -2359,6 +2368,12 @@ class Engine:
                 return
             pick = rng.choice(cand)
             self._say(st, f"  잠꼬대 -> {self.data.moves[norm(pick)]['name']}")
+            o_ = st.sides[1 - i].mon
+            pm_ = self.data.moves[norm(pick)]
+            if o_.alive and norm(o_.ability) == "pressure" and pm_["target"] not in ("self", "adjacentAlly", "allySide", "allyTeam", "adjacentAllyOrSelf", "allies", "foeSide"):
+                k_ = self._slot_of(A, "sleeptalk")                  # 압박: 잠꼬대로 부른 기술이 압박 상대를 향하면 잠꼬대의 PP 가 1 더 줄어든다 (Showdown)
+                if k_ is not None and k_ < len(A.pp):
+                    A.pp[k_] = max(0, A.pp[k_] - 1)
             self._run_move(st, i, self.data.moves[norm(pick)], norm(pick), self._acts, rng, self._policy)
             if A.rampage:
                 A.last_move = norm(pick)                      # 잠꼬대로 쓴 난동부리기류는 다음 턴에도 그 기술로 잠긴다
