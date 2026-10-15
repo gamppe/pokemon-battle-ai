@@ -2718,7 +2718,7 @@ class Engine:
                 if norm(A.ability) not in NO_SWAP and norm(D.ability) not in NO_SWAP:
                     A.abil_orig, D.abil_orig = A.abil_orig or A.ability, D.abil_orig or D.ability
                     A.ability, D.ability = D.ability, A.ability
-                    for sd_, m_ in ((i, A), (o, D)):                 # 바꿔 받은 특성의 등장 효과가 바로 발동한다 (사이코메이커, 위협 등)
+                    for sd_, m_ in ((o, D), (i, A)):                 # 바꿔 받은 특성의 등장 효과가 바로 발동한다 (사이코메이커, 위협 등). Showdown 순서: 대상 먼저, 사용자 나중
                         if m_.alive:
                             self._run_switch_in(st, sd_, m_, rng, only="ability")
             return
@@ -2930,24 +2930,38 @@ class Engine:
         self._switch_in(st, i, rng, to=j if j in cand else cand[0], carry=carry)
 
     def _side_condition(self, st, i, code, swap=False):
-        """swap=True 면 i 가 '해저드를 받는 쪽'(기술 사용자의 상대)"""
+        """swap=True 면 i 가 '해저드를 받는 쪽'(기술 사용자의 상대). 이미 걸려 있어 바뀌는 게 없으면 self._sfail = True (기술 실패 기록)"""
         S, T = (st.sides[1 - i], st.sides[i]) if swap else (st.sides[i], st.sides[1 - i])
         if code in ("reflect", "lightscreen", "auroraveil"):
             k = {"reflect": "reflect", "lightscreen": "light_screen", "auroraveil": "aurora_veil"}[code]
             if S.screens.get(k, 0) <= 0:
                 S.screens[k] = 8 if norm(S.mon.item) == "lightclay" else 5
+            else:
+                self._sfail = True
         elif code == "tailwind":
             if S.screens.get("tailwind", 0) <= 0:                 # 이미 불고 있으면 실패 (지속 시간은 그대로)
                 S.screens["tailwind"] = 4
+            else:
+                self._sfail = True
         elif code == "stealthrock":
+            if T.hazards.get("stealthrock"):
+                self._sfail = True
             T.hazards["stealthrock"] = 1
         elif code == "spikes":
+            if T.hazards.get("spikes", 0) >= 3:
+                self._sfail = True
             T.hazards["spikes"] = min(3, T.hazards.get("spikes", 0) + 1)
         elif code == "toxicspikes":
+            if T.hazards.get("toxicspikes", 0) >= 2:
+                self._sfail = True
             T.hazards["toxicspikes"] = min(2, T.hazards.get("toxicspikes", 0) + 1)
         elif code == "stickyweb":
+            if T.hazards.get("stickyweb"):
+                self._sfail = True
             T.hazards["stickyweb"] = 1
         elif code == "safeguard":
+            if S.screens.get("safeguard", 0) > 0:
+                self._sfail = True
             S.screens["safeguard"] = 5
         else:
             self._unsup("side_condition:" + code)
