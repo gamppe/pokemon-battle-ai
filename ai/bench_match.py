@@ -68,6 +68,8 @@ class Player:
 
     def decide(self, st):
         eng, me, opp = _G["eng"], self.side, 1 - self.side
+        if self.kind == "random":          # Showdown 의 RandomPlayerAI 와 같은 방식: 합법 행동 중 무작위
+            return self.rng.choice(eng.legal_actions(st, me))
         if self.kind == "greedy":
             return greedy_action(eng, st, me, self.rng)
         alive = {i: m for i, m in self.models.items() if st.sides[opp].team[i].alive}

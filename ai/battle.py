@@ -292,6 +292,7 @@ class Engine:
         bm.ability = self.base_ability(mega)
         bm.abil_orig = None
         self._say(st, f"[{i}] {bm.name} 메가진화 -> {mega}")
+        self._m(st, "mega", i, sid=bm.sid, to=mega)
         self._run_switch_in(st, i, bm, rng, only="ability")       # 새 특성의 등장 효과 (가뭄, 위협 등)
         self._forecast_sync(st)
         self._opportunist_flush(st)
@@ -326,6 +327,17 @@ class Engine:
     def _say(self, st, msg):
         if st.log is not None:
             st.log.append(msg)
+
+    def _m(self, st, k, side=None, **kw):
+        """구조화된 배틀 메시지 (GUI 가 한국어 문장으로 만든다). 로그 모드가 아니면(탐색 중) 아무것도 하지 않는다"""
+        if st.log is None:
+            return
+        if side is not None and "sid" not in kw:
+            kw["sid"] = st.sides[side].mon.sid
+        m = getattr(st, "msgs", None)
+        if m is None:
+            st.msgs = m = []
+        m.append(dict(k=k, s=side, turn=st.turn, **kw))
 
     def _unsup(self, why):
         self.unsupported[why] = self.unsupported.get(why, 0) + 1
@@ -447,6 +459,8 @@ class Engine:
             bm.faint_logged = False
         if bm.hp != before and why not in ("자폭", "메멘토", "길동무", "멸망의노래", "healingwish", "lunardance"):       # 자기희생은 Showdown 도 피해 로그 없이 faint 만 낸다
             self._tr(st, "dmg" if bm.hp < before else "heal", side)
+        if bm.hp != before:
+            self._m(st, "hp", side, sid=bm.sid, delta=bm.hp - before, hp=bm.hp, maxhp=bm.maxhp, why=why)
         if before and not bm.hp:
             if not bm.faint_logged:
                 st.last_faint_side = side
@@ -454,6 +468,7 @@ class Engine:
             bm.status = None
             bm.boosts = {}                                  # 쓰러지면 능력 단계도 초기화된다 (Showdown clearVolatile)
             self._say(st, f"  {bm.name} 쓰러짐 ({why})")
+            self._m(st, "faint", side, sid=bm.sid)
         return bm.hp - before
 
     # ───────────────────────── DB hook 행 ─────────────────────────
@@ -555,6 +570,15 @@ class Engine:
         return n.endswith("berry") or n.endswith("seed") or n in ("airballoon", "redcard", "ejectbutton", "whiteherb", "mentalherb")
 
     def apply_row(self, st, src, row, side, bm, rng, mv=None, dmg=0, foe_side=None):
+        n0 = len(st.msgs) if st.log is not None and getattr(st, "msgs", None) is not None else 0
+        ok = self._apply_row(st, src, row, side, bm, rng, mv, dmg, foe_side)
+        if ok and st.log is not None and ":" in src and src.split(":", 1)[0] in ("ability", "item") and (row["kind"] not in ("heal_frac", "damage_frac") or src.startswith("ability")):
+            self._m(st, "trigger", side, sid=bm.sid, src=src, rk=row["kind"], code=row.get("code"))
+            if getattr(st, "msgs", None) and len(st.msgs) - 1 > n0:       # 발동 표시는 그 효과가 만든 메시지보다 앞에 온다
+                st.msgs.insert(n0, st.msgs.pop())
+        return ok
+
+    def _apply_row(self, st, src, row, side, bm, rng, mv=None, dmg=0, foe_side=None):
         """hook 행 하나를 적용. side/bm 은 효과 소유자, foe_side 는 상대편(attacker/foe 대상)"""
         if row["chance"] is not None and row["chance"] < 100 and rng.random() * 100 >= row["chance"]:
             return False
@@ -600,6 +624,7 @@ class Engine:
         elif kind == "set_terrain":
             if st.terrain != code:                          # 이미 같은 필드면 아무 일도 없다 (지속 시간도 갱신되지 않음)
                 st.terrain = code
+                self._m(st, "terrain", None, t=code)
                 st.terrain_turns = 8 if any(r["code"] == "extend_terrain" for r in self.data.item_fx.get(norm(bm.item), [])) else 5
                 self._terrain_seeds(st, rng)
         elif kind == "cure_status":
@@ -619,6 +644,7 @@ class Engine:
             elif code == "set_toxic_spikes":
                 t = st.sides[o]
                 t.hazards["toxicspikes"] = min(int(row["cond"].get("max_layers", 2)), t.hazards.get("toxicspikes", 0) + int(val or 1))
+                self._m(st, "field_set", o, code="toxicspikes")
             elif code == "reset_negative_stages":
                 for k in list(bm.boosts):
                     if bm.boosts[k] < 0:
@@ -652,6 +678,7 @@ class Engine:
                     bm.abil_orig = bm.abil_orig or bm.ability
                     bm.ability = foe.ability
                     self._say(st, f"  트레이스 -> {foe.ability}")
+                    self._m(st, "trace", side, sid=bm.sid, ability=foe.ability)
                     self._run_switch_in(st, side, bm, rng, only="ability")
                 applied = False
             elif code == "transform":
@@ -712,6 +739,9 @@ class Engine:
         bm.boosts[stat] = new
         if new != old:
             self._tr(st, "boost" if new > old else "unboost", side, stat)
+            self._m(st, "boost", side, sid=bm.sid, stat=stat, n=new - old)
+        elif n:
+            self._m(st, "nomore", side, sid=bm.sid, stat=stat, up=n > 0)
         if n > 0 and new != old:
             bm.raised_turn = st.turn or 1                    # 배틀 시작 시점의 변화는 첫 턴에 일어난 것으로 본다
             if not getattr(self, "_in_opp", False):                 # 편승: 상대의 능력 상승을 모아 두었다가 따라 올린다
@@ -770,6 +800,7 @@ class Engine:
         bm.tox = 1 if code == "tox" else 0
         self._tr(st, "status", side, "tox" if code == "tox" else code)
         self._say(st, f"  {bm.name} → {code}")
+        self._m(st, "status", side, sid=bm.sid, code=code)
         self._status_item_cure(st, bm, code)
         if bm.status and ab == "synchronize" and src_side is not None and src_side != side and code in ("par", "brn", "psn", "tox"):
             self.try_status(st, src_side, st.sides[src_side].mon, code, rng, src_side=side, ignore_sub=True)
@@ -788,6 +819,9 @@ class Engine:
         bm.pp = [min(5, self.max_pp(x)) for x in bm.spec["moves"]]
         bm.maxpp = list(bm.pp)
         self._say(st, f"  {bm.name} → {tgt.name} 로 변신")
+        for k_ in (0, 1):
+            if st.sides[k_].mon is bm:
+                self._m(st, "transform", k_, sid=bm.sid, to=tgt.sid)
         return True
 
     def _confuse(self, st, bm, turns):
@@ -795,6 +829,9 @@ class Engine:
             return
         bm.vol.add("confusion")
         bm.confusion = turns
+        for k_ in (0, 1):
+            if st.sides[k_].mon is bm:
+                self._m(st, "confuse", k_, sid=bm.sid)
         for src, r in self.rows(bm, "on_status"):
             if r["kind"] == "cure_status" and bm.item and src == "item" and self._unnerved(st, bm):
                 bm.unnerved = True
@@ -891,6 +928,8 @@ class Engine:
             elif carry:
                 passed = (dict(old.boosts), old.sub, {v for v in old.vol if v in ("leechseed", "focusenergy", "curse", "confusion")},
                           dict(taunt=old.taunt, healblock=old.healblock, perish=old.perish, confusion=old.confusion))     # Baton Pass 로 넘어가는 상태 (noCopy 가 아닌 것)
+            if old.alive and not drag:
+                self._m(st, "out", side, sid=old.sid)
             old.boosts, old.vol, old.locked, old.protect_n, old.recharge = {}, set(), None, 0, False
             old.perish = 0
             if old.abil_orig is not None:
@@ -936,6 +975,7 @@ class Engine:
             for k_, v_ in passed[3].items():
                 setattr(bm, k_, v_)
         self._say(st, f"[{side}] {bm.name} 등장")
+        self._m(st, "in", side, sid=bm.sid, drag=drag, first=(to is None))
         if S.heal_next and (bm.hp < bm.maxhp or bm.status):          # 체력이 가득하고 상태이상도 없으면 효과를 남겨 두었다가 다음 교체 대상에게 쓴다
             bm.hp, bm.status = bm.maxhp, None
             S.heal_next = None
@@ -968,6 +1008,7 @@ class Engine:
                 cand_ = [j for j in S.alive_idx() if j != S.active]
                 if cand_:
                     self._say(st, f"  {bm.name} 비상탈출")
+                    self._m(st, "trigger", side, sid=bm.sid, src="ability:" + bm.ability, rk="emergency_exit", code=None)
                     j_ = self._policy(st, side) if self._policy else cand_[0]
                     self._switch_in(st, side, rng, to=j_ if j_ in cand_ else cand_[0])
         if defer:                                           # 동시에 교체되면 등장 효과는 모두 나온 뒤 현재 속도 순으로 처리된다
@@ -1058,6 +1099,7 @@ class Engine:
 
     def _set_weather(self, st, w, bm):
         st.weather = w
+        self._m(st, "weather", None, w=w)
         rock = WEATHER_ROCK.get(w)
         st.weather_turns = 8 if rock and norm(bm.item) == rock else 5
 
@@ -1289,6 +1331,7 @@ class Engine:
             if not [j for j in st.sides[i].alive_idx() if j != st.sides[i].active]:
                 continue
             self._say(st, f"  {m.name} 비상탈출")
+            self._m(st, "trigger", i, sid=m.sid, src="ability:" + m.ability, rk="emergency_exit", code=None)
             cand = [j for j in st.sides[i].alive_idx() if j != st.sides[i].active]
             j = switch_policy(st, i) if switch_policy else cand[0]
             r_ = self._switch_in(st, i, rng, to=j if j in cand else cand[0], defer=defer)
@@ -1342,7 +1385,10 @@ class Engine:
             if bm.sleep <= 0:
                 bm.status = None
                 self._say(st, f"  {bm.name} 일어남")
+                self._m(st, "wake", i, sid=bm.sid)
             elif not (mv and norm(mv["name"]) in ("sleeptalk", "snore")):          # 잠꼬대/코골기는 자는 중에도 쓸 수 있다
+                self._say(st, f"  {bm.name} 잠들어 있어 움직일 수 없다")
+                self._m(st, "cant", i, sid=bm.sid, why="sleep")
                 return False
         if bm.status == "frz" and mv and "defrost" in mv["flags"]:      # 불꽃 기술(defrost 플래그)을 쓰면 얼음이 풀리고 그대로 공격한다
             bm.status = None
@@ -1350,9 +1396,14 @@ class Engine:
             bm.frz_n -= 1
             if bm.frz_n <= 0 or rng.random() < 0.25:
                 bm.status = None
+                self._m(st, "thaw", i, sid=bm.sid)
             else:
+                self._say(st, f"  {bm.name} 얼어붙어 움직일 수 없다")
+                self._m(st, "cant", i, sid=bm.sid, why="freeze")
                 return False
         if "flinch" in bm.vol:
+            self._say(st, f"  {bm.name} 풀이 죽어 움직일 수 없다")
+            self._m(st, "cant", i, sid=bm.sid, why="flinch")
             for src, r in self.rows(bm, "on_flinch"):
                 if r["kind"] == "stat_stage":
                     self.change_boost(st, i, bm, r["code"], int(r["value"]))
@@ -1362,9 +1413,13 @@ class Engine:
             if bm.confusion <= 0:
                 bm.vol.discard("confusion")
             elif rng.random() < 0.33:                       # Showdown: randomChance(33, 100)
+                self._say(st, f"  {bm.name} 혼란으로 자신을 공격했다")
+                self._m(st, "cant", i, sid=bm.sid, why="confusion")
                 self.hp_change(st, i, bm, -min(bm.hp, self._confusion_damage(bm, rng, bool(st.wonder_room))), "혼란")
                 return False
         if bm.status == "par" and rng.random() < 0.125:       # 챔피언스: 행동 불가 1/8
+            self._say(st, f"  {bm.name} 몸이 저려 움직일 수 없다")
+            self._m(st, "cant", i, sid=bm.sid, why="paralysis")
             return False
         return True
 
@@ -1382,11 +1437,13 @@ class Engine:
             mname = next((m for m in bm.spec["moves"] if norm(m) == bm.encore_move), mname)
         mv = self.data.moves[norm(mname)]
         self._say(st, f"[{i}] {bm.name}: {mv['name']}")
+        self._m(st, "use", i, sid=bm.sid, move=norm(mv["name"]))
         if bm.disabled and norm(mname) == bm.disabled:         # 봉인: 이미 고른 기술도 쓰지 못하고 턴을 잃는다
             if bm.status in ("slp", "frz") and not self._can_act(st, i, bm, rng, mv):      # 잠듦/얼음(BeforeMove 우선도 10)이 봉인(7)보다 먼저 판정되어 카운트가 줄어든다
                 bm.last_failed = True
                 return
             self._say(st, "  봉인으로 사용 불가")
+            self._m(st, "cant", i, sid=bm.sid, why="disable", move=norm(mname))
             self._rampage_abort(st, bm, rng)
             return
         bm.moves_made += 1
@@ -1408,26 +1465,32 @@ class Engine:
         foe_im = st.sides[1 - i].mon
         if (st.gravity and "gravity" in mv["flags"]) or ("imprison" in foe_im.vol and foe_im.alive and norm(mname) != "struggle"
                                                           and norm(mname) in {norm(m_) for m_ in foe_im.spec["moves"]}):
-            self._say(st, "  봉인/중력으로 사용 불가")           # BeforeMove 에서 막히면 PP 는 줄지 않는다
+            self._say(st, "  봉인/중력으로 사용 불가")
+            self._m(st, "cant", i, sid=bm.sid, why="imprison_gravity")           # BeforeMove 에서 막히면 PP 는 줄지 않는다
             self._rampage_abort(st, bm, rng)
             return
         if norm(mname) == "focuspunch" and bm.hurt_turn == st.turn:      # 행동 전에 공격을 받으면 집중이 흐트러져 기술을 쓰지 못한다 (BeforeMove 중단)
             self._say(st, "  집중이 흐트러졌다")
+            self._m(st, "cant", i, sid=bm.sid, why="focuspunch")
             bm.db_pending = False
             if norm(bm.item) not in CHOICE:
                 bm.locked = None
             return
         if bm.throat and "sound" in mv["flags"]:
             self._say(st, "  지옥찌르기로 소리 기술 사용 불가")
+            self._m(st, "cant", i, sid=bm.sid, why="throat")
             return
         if bm.taunt and mv["category"] == "status":
             self._say(st, "  도발로 사용 불가")
+            self._m(st, "cant", i, sid=bm.sid, why="taunt", move=norm(mv["name"]))
             return
         if bm.healblock and "heal" in mv["flags"]:
             self._say(st, "  힐블록으로 사용 불가")
+            self._m(st, "cant", i, sid=bm.sid, why="healblock", move=norm(mv["name"]))
             return
         if act[0] != "t" and bm.locked and norm(bm.item) in CHOICE and norm(mname) != norm(bm.locked) and bm.charge != norm(mname)                 and any(norm(m_) == norm(bm.locked) for m_ in bm.spec["moves"]):
-            self._say(st, "  구애 고정으로 사용 불가")         # 매직룸이 중간에 끝나 도구가 되살아난 경우: 기술은 실패하고 PP 는 줄지 않는다 (Showdown choice onBeforeMove)
+            self._say(st, "  구애 고정으로 사용 불가")
+            self._m(st, "cant", i, sid=bm.sid, why="choice", move=norm(mv["name"]))         # 매직룸이 중간에 끝나 도구가 되살아난 경우: 기술은 실패하고 PP 는 줄지 않는다 (Showdown choice onBeforeMove)
             self._rampage_abort(st, bm, rng)
             return
         locked_on = bool(bm.charge == norm(mname) or ((bm.rampage or bm.uproar) and bm.last_move))      # 두 번째 턴(충전 공격)/난동부리기 잠금에서는 PP 가 줄지 않는다
@@ -1471,6 +1534,7 @@ class Engine:
                 if chg.get("evasion_max") in ("flying", "underground", "underwater", "shadow"):
                     bm.semi = [norm(x) for x in chg.get("hit_by_moves", [])]
                 self._say(st, "  충전")
+                self._m(st, "charge", i, sid=bm.sid, move=norm(mv["name"]))
                 st.lastmove_any = norm(mname)
                 return
         self._run_move(st, i, mv, mname, acts, rng, switch_policy)
@@ -1512,9 +1576,11 @@ class Engine:
             if st.sides[1 - i].future is None:
                 st.sides[1 - i].future = dict(left=3, src=bm, key=norm(mv["name"]))
                 self._say(st, "  미래공격 예약")
+                self._m(st, "future_set", i, sid=bm.sid, move=norm(mv["name"]))
                 bm.last_failed = False
             else:
                 self._say(st, "  실패")
+                self._m(st, "fail", i)
             return
         counter_fail = norm(mv["name"]) in ("counter", "mirrorcoat", "metalburst") and (
             not st.last_hit[i] or {"counter": "special", "mirrorcoat": "physical"}.get(norm(mv["name"])) == st.last_cat[i])
@@ -1525,6 +1591,7 @@ class Engine:
             bm.types = [mv["type"]]
         if not self._use_condition_ok(st, i, mv, acts, late=True):
             self._say(st, "  실패 (대상 타입)")
+            self._m(st, "fail", i)
             bm.last_failed = True
             return
         o = 1 - i
@@ -1533,16 +1600,19 @@ class Engine:
         foe_target = not target_is_self
         if foe_target and not D.alive:
             self._say(st, "  대상 없음")
+            self._m(st, "fail", i)
             self._self_destruct_fail(st, i, mv)
             self._rampage_abort(st, bm, rng)
             return
         if foe_target and D.semi is not None and norm(bm.ability) != "noguard" and norm(D.ability) != "noguard" and norm(mv["name"]) not in D.semi:
             self._say(st, "  빗나감(반무적 상태)")
+            self._m(st, "miss", i)
             self._rampage_abort(st, bm, rng)
             self._self_destruct_fail(st, i, mv)
             return
         if foe_target and st.terrain == "psychic" and self._grounded(D) and self._priority(st, i, mv) > 0:
             self._say(st, "  사이코필드가 선공기를 막음")
+            self._m(st, "psyterrain_block", o)
             self._rampage_abort(st, bm, rng)
             self._self_destruct_fail(st, i, mv)
             return
@@ -1552,12 +1622,14 @@ class Engine:
                 ("quickguard" in D.vol and self._priority(st, i, mv) > 0) or
                 ("wideguard" in D.vol and mv["target"] in ("allAdjacent", "allAdjacentFoes"))):
             self._say(st, "  막혔다")
+            self._m(st, "protected", o)
             bm.last_failed = False                  # 막힌 기술은 실패가 아니다 (NOT_FAIL) -> Temper Flare 등의 '직전 기술 실패' 조건이 아님
             self._self_destruct_fail(st, i, mv)
             return
         if "protecting" in D.vol and "protect" in mv["flags"] and foe_target and not (
                 mv["category"] == "status" and any(k in D.vol for k in ("kingsshield", "silktrap", "obstruct"))):
             self._say(st, "  막혔다")
+            self._m(st, "protected", o)
             bm.last_failed = False
             self._self_destruct_fail(st, i, mv)
             self._contact_punish(st, i, o, mv, rng)
@@ -1572,14 +1644,24 @@ class Engine:
             for k in ("reflect", "light_screen", "aurora_veil"):         # onTryHit: 명중/면역/대타보다 먼저 상대 진영의 벽을 부순다
                 if st.sides[o].screens.pop(k, None):
                     self._say(st, f"  {k} 파괴")
+                    self._m(st, "field_end", o, code=k, broken=True)
         if mv["category"] == "status" and mv["bp"] == 0:
+            n0_ = len(st.msgs) if st.log is not None and getattr(st, "msgs", None) is not None else 0
             self._status_move(st, i, mv, rng)
             bm.last_failed = self._sfail
+            if st.log is not None and getattr(st, "msgs", None) is not None:
+                new_ = st.msgs[n0_:]
+                if self._sfail and not new_:
+                    self._m(st, "fail", i)
+                elif not self._sfail and not any(x["k"] in ("field_set", "weather", "terrain", "room", "boost", "status", "confuse", "transform") for x in new_):
+                    ts_ = i if target_is_self else o
+                    self._m(st, "status_ok", ts_, move=norm(mv["name"]), user=i)
             return
         imm_first = (mv["category"] != "status" and foe_target and not mv["ohko"] and not mv["fixed_damage"]
                      and self.rolls(st, i, o, norm(mv["name"]), False)["reason"] == "immune")      # 타입 면역은 명중 판정보다 먼저 (빗나감/반동이 아니라 효과 없음)
         if not imm_first and norm(mv["name"]) not in MULTI_ACCURACY and not self._hits(st, i, o, mv, rng, target_is_self):
             self._say(st, "  빗나감")
+            self._m(st, "miss", i)
             self._rampage_abort(st, bm, rng)
             self._self_destruct_fail(st, i, mv)
             if mv["name"].lower() in ("jump kick", "high jump kick"):
@@ -1591,6 +1673,7 @@ class Engine:
         if norm(mv["name"]) == "spitup" and not bm.stockpile:
             bm.last_failed = True
             self._say(st, "  실패 (비축 없음)")
+            self._m(st, "fail", i)
             return
         if norm(mv["name"]) == "uproar":                    # 소란피기: 쓰는 순간 양쪽의 잠듦이 깨어난다
             for S_ in st.sides:
@@ -1645,6 +1728,7 @@ class Engine:
                 else:
                     D.vol.add("flashfire")
                 self._say(st, f"  {D.name} 흡수")
+                self._m(st, "trigger", o, sid=D.sid, src="ability:" + D.ability, rk="absorb", code=None)
                 return True
             if r["kind"] == "immune" and code == "type:" + mv["type"] and mv["type"] != "Ground":
                 for r2 in self.data.ability_fx.get(norm(D.ability), []):
@@ -1803,22 +1887,26 @@ class Engine:
         late_item = False
         hit_sub = False
         deferred = None
+        tmod_, eff_said = 0, False
         for h in range(1, nhits + 1):
             if not D.alive or not A.alive:
                 break
             if key in MULTI_ACCURACY and norm(A.ability) != "skilllink" and not self._hits(st, i, o, mv, rng, False):
                 if h == 1:
                     self._say(st, "  빗나감")
+                    self._m(st, "miss", i)
                 break
             if mv["fixed_damage"] or key in ("seismictoss", "nightshade"):
                 if self._chart_immune(mv, D):
                     self._say(st, "  효과 없음")
+                    self._m(st, "noeffect", o)
                     return
                 dmg, crit = mv["fixed_damage"] or 50, False
             elif mv["ohko"]:
                 imm = self.rolls(st, i, o, key, False)
                 if imm["reason"] == "immune" or self._chart_immune(mv, D) or (norm(D.ability) == "sturdy" and norm(A.ability) not in MOLD_BREAKERS):
                     self._say(st, "  효과 없음")
+                    self._m(st, "noeffect", o)
                     return
                 dmg, crit = D.hp, False
             elif key in ("counter", "mirrorcoat", "metalburst", "comeuppance"):
@@ -1830,6 +1918,7 @@ class Engine:
             elif key == "finalgambit":
                 if self._chart_immune(mv, D):
                     self._say(st, "  효과 없음")
+                    self._m(st, "noeffect", o)
                     return
                 dmg, crit = A.hp, False
                 st.last_faint_side, A.faint_logged = i, True           # 아슬아슬한승부: 사용자의 기절이 대상보다 먼저 기록된다
@@ -1852,11 +1941,14 @@ class Engine:
                                 self.hp_change(st, i, A, -math.floor(A.maxhp * rr["params"]["hp_frac"]), "크래시")
                     if r["reason"] == "immune":
                         self._say(st, "  효과 없음")
+                        self._m(st, "noeffect", o)
                     elif r["reason"] == "fail":
                         self._say(st, "  실패")
+                        self._m(st, "fail", i)
                     self._self_destruct_fail(st, i, mv)
                     return
                 rl_ = r["rolls"]
+                tmod_ = (r.get("mid") or {}).get("typeMod", 0) or 0
                 if r.get("variants") and rng.random() < r["variants"]["chance"]:            # 변덕레이저: 30% 확률로 위력 2배
                     rl_ = r["variants"]["proc_rolls"]
                 dmg = rng.choice(rl_)
@@ -1880,6 +1972,7 @@ class Engine:
                 if key == "fling":
                     A.item = ""                                   # 대타에 맞아도 던진 도구는 사라진다
                 self._say(st, f"  대타 -{d}")
+                self._m(st, "sub_hit", o, sid=D.sid, broke=D.sub <= 0)
                 if mv["drain"] and A.alive and d:
                     self.hp_change(st, i, A, max(1, math.floor(d * _frac(mv["drain"] / 100) + 0.5)), "흡수")
                 continue
@@ -1889,6 +1982,7 @@ class Engine:
                 D.types = list(self.data.pokemon[D.sid]["types"])      # 폼 체인지(Mimikyu-Busted)로 타입이 원래대로 돌아간다
                 self.hp_change(st, o, D, -max(1, D.maxhp // 8), "탈")
                 self._say(st, "  탈 벗겨짐")
+                self._m(st, "trigger", o, sid=D.sid, src="ability:Disguise", rk="disguise", code=None)
                 self._zero_hit = True
                 if key in ("thief", "covet") and A.alive and not A.item and D.item and norm(D.ability) != "stickyhold" and not self._own_stone(D):
                     A.item, D.item = D.item, ""                    # 변장이 막아도 도둑질은 도구를 빼앗는다
@@ -1917,6 +2011,11 @@ class Engine:
             total += dmg
             landed += 1
             self._say(st, f"  {D.name} -{dmg} ({D.hp}/{D.maxhp})")
+            if crit:
+                self._m(st, "crit", o, sid=D.sid)
+            if tmod_ and not eff_said:
+                eff_said = True
+                self._m(st, "eff", o, sid=D.sid, mod=tmod_)
             if mv["drain"] and A.alive and dmg:
                 heal = max(1, math.floor(dmg * _frac(mv["drain"] / 100) + 0.5))
                 if norm(D.ability) == "liquidooze":
@@ -1957,6 +2056,8 @@ class Engine:
         if not landed:
             return
         self._landed = True
+        if landed > 1 and nhits > 1:
+            self._m(st, "hits", o, n=landed)
         if late_item and D.alive:
             for src, r in self.rows(D, "on_hit_taken"):
                 if src == "item" and D.item and self._cond_ok(r["cond"], st, o, D, mv):
@@ -2173,6 +2274,7 @@ class Engine:
         if norm(mv["name"]) == "sparklingaria" and not hit_sub and D.alive and D.status == "brn" and norm(D.ability) != "shielddust":     # 상대의 화상을 치료한다
             D.status = None
             self._say(st, f"  {D.name} 화상 치료")
+            self._m(st, "cure", o, sid=D.sid, code="brn")
         mult = 2 if norm(A.ability) == "serenegrace" else 1
         need_raised = norm(mv["name"]) in ("alluringvoice", "burningjealousy")        # 상대가 이번 턴 능력이 올랐을 때만 (onHit 코드 조건)
         for e in mv["effects"]:
@@ -2311,6 +2413,7 @@ class Engine:
         r = calc(self.data, sa, sd, mv["name"], F, False, hit=1, proc=False, flags=frozenset({"progress", "real_immunity"}))
         if not r["rolls"]:
             self._say(st, "  미래공격: 효과 없음")
+            self._m(st, "noeffect", tgt_side)
             return
         if rng.random() < 1 / 24:
             r = calc(self.data, sa, sd, mv["name"], F, True, hit=1, proc=False, flags=frozenset({"progress", "real_immunity"}))
@@ -2330,6 +2433,7 @@ class Engine:
                 self._use_item(st, D)
         dmg = min(dmg, D.hp)
         self._say(st, f"  미래공격 {D.name} -{dmg}")
+        self._m(st, "future_hit", tgt_side, sid=D.sid, move=fut.get("key"))
         hp_before = D.hp
         self.hp_change(st, tgt_side, D, -dmg, mv["name"])
         if dmg > 0 and src.alive and st.sides[1 - tgt_side].mon is src and norm(src.item) == "lifeorb" and norm(src.ability) not in ("magicguard", "sheerforce"):
@@ -2375,6 +2479,7 @@ class Engine:
         self._sfail = False                         # 실패하면 True -> 직전 기술 실패 조건(Temper Flare 등)과 Stomping Tantrum 에 쓴다
         if mv["target"] == "adjacentAlly":          # 코치/도우미 등 아군 대상 기술은 싱글배틀에서는 대상이 없어 실패한다
             self._say(st, "  대상 없음")
+            self._m(st, "fail", i)
             self._sfail = True
             return
         if key == "sleeptalk":                      # 자는 동안 자신의 기술 중 하나를 무작위로 쓴다 (불러 쓸 수 없는 기술 제외)
@@ -2387,6 +2492,7 @@ class Engine:
                 return
             pick = rng.choice(cand)
             self._say(st, f"  잠꼬대 -> {self.data.moves[norm(pick)]['name']}")
+            self._m(st, "use", i, move=norm(pick), via="sleeptalk")
             o_ = st.sides[1 - i].mon
             pm_ = self.data.moves[norm(pick)]
             if o_.alive and norm(o_.ability) == "pressure" and pm_["target"] not in ("self", "adjacentAlly", "allySide", "allyTeam", "adjacentAllyOrSelf", "allies", "foeSide"):
@@ -2401,6 +2507,7 @@ class Engine:
             lm = self._lm_prev
             if lm and lm in self.data.moves and "failcopycat" not in self.data.moves[lm]["flags"] and lm != "copycat":
                 self._say(st, f"  따라하기 -> {self.data.moves[lm]['name']}")
+                self._m(st, "use", i, move=lm, via="copycat")
                 self._run_move(st, i, self.data.moves[lm], lm, self._acts, rng, self._policy)
             else:
                 self._sfail = True
@@ -2408,6 +2515,7 @@ class Engine:
         if key in ("endure", "quickguard", "wideguard") or key in PROTECT_MOVES:
             if not self._will_act(st, i):            # 이번 턴에 뒤에 행동할 상대가 없으면 실패. stall 이 갱신되지 않으므로 다음 턴엔 카운터가 사라진다
                 self._say(st, "  실패 (마지막 행동)")
+                self._m(st, "fail", i)
                 A.protect_n = 0
                 self._sfail = True
                 return
@@ -2437,6 +2545,7 @@ class Engine:
         tself = mv["target"] in NON_FOE_TARGETS
         if "reflectable" in mv["flags"] and D.alive and norm(D.ability) == "magicbounce" and not bounced and mv["target"] in ("normal", "foeSide"):
             self._say(st, "  반사")
+            self._m(st, "trigger", o, sid=D.sid, src="ability:Magic Bounce", rk="reflect", code=None)
             self._status_move(st, o, mv, rng, bounced=True)
             return
         if not tself:
@@ -2462,6 +2571,7 @@ class Engine:
                         return
             if not self._hits(st, i, o, mv, rng, False):
                 self._say(st, "  빗나감")
+                self._m(st, "miss", i)
                 self._sfail = True
                 return
         handled = False
@@ -2646,6 +2756,7 @@ class Engine:
             if D.alive and mvI and "failinstruct" not in mvI["flags"] and slot is not None and slot < len(D.pp) and D.pp[slot] > 0 \
                     and not D.charge and not D.recharge:
                 self._say(st, f"  지시 -> {mvI['name']}")
+                self._m(st, "use", o, sid=D.sid, move=norm(mvI["name"]), via="instruct")
                 self._deduct_pp(st, o, D, slot, mvI, rng)
                 self._run_move(st, o, mvI, lm, self._acts, rng, self._policy)
             else:
@@ -2671,6 +2782,7 @@ class Engine:
                 self._sfail = True
                 return
             st.gravity = 5
+            self._m(st, "room", None, r="gravity", on=True)
             self._grav = True
             for S_ in st.sides:
                 m_ = S_.mon
@@ -2749,6 +2861,7 @@ class Engine:
                 self._magic_end(st)
             else:
                 st.magic_room = 5
+                self._m(st, "room", None, r="magic", on=True)
                 for S_ in st.sides:
                     for m_ in S_.team:
                         if m_.item:
@@ -2763,9 +2876,11 @@ class Engine:
             return
         if key == "trickroom":
             st.trick_room = 0 if st.trick_room else 5
+            self._m(st, "room", None, r="trick", on=bool(st.trick_room))
             return
         if key == "wonderroom":                 # 원더룸: 5턴 동안 모든 포켓몬의 방어/특방 수치가 서로 바뀐다 (능력 단계는 이름 그대로) -- 다시 쓰면 해제
             st.wonder_room = 0 if st.wonder_room else 5
+            self._m(st, "room", None, r="wonder", on=bool(st.wonder_room))
             return
         if key == "transform":
             if D.alive and self._transform(st, A, D) and A.ability:
@@ -2833,6 +2948,8 @@ class Engine:
                     sd.hazards.pop(h, None)
             for k in ("reflect", "light_screen", "aurora_veil", "safeguard"):
                 st.sides[o].screens.pop(k, None)
+            if st.terrain:
+                self._m(st, "terrain_end", None, t=st.terrain)
             st.terrain = None
             return
         if key == "partingshot":
@@ -2871,6 +2988,7 @@ class Engine:
                 t = e["code"].replace("terrain", "")
                 if st.terrain != t:
                     st.terrain = t
+                    self._m(st, "terrain", None, t=t)
                     st.terrain_turns = 8 if any(r["code"] == "extend_terrain" for r in self.data.item_fx.get(norm(A.item), [])) else 5
                     self._terrain_seeds(st, rng)
             elif kind == "side_condition":
@@ -2943,33 +3061,45 @@ class Engine:
             k = {"reflect": "reflect", "lightscreen": "light_screen", "auroraveil": "aurora_veil"}[code]
             if S.screens.get(k, 0) <= 0:
                 S.screens[k] = 8 if norm(S.mon.item) == "lightclay" else 5
+                self._m(st, "field_set", st.sides.index(S), code=k)
             else:
                 self._sfail = True
         elif code == "tailwind":
             if S.screens.get("tailwind", 0) <= 0:                 # 이미 불고 있으면 실패 (지속 시간은 그대로)
                 S.screens["tailwind"] = 4
+                self._m(st, "field_set", st.sides.index(S), code="tailwind")
             else:
                 self._sfail = True
         elif code == "stealthrock":
             if T.hazards.get("stealthrock"):
                 self._sfail = True
             T.hazards["stealthrock"] = 1
+            if not getattr(self, "_sfail", False):
+                self._m(st, "field_set", st.sides.index(T), code="stealthrock")
         elif code == "spikes":
             if T.hazards.get("spikes", 0) >= 3:
                 self._sfail = True
             T.hazards["spikes"] = min(3, T.hazards.get("spikes", 0) + 1)
+            if not getattr(self, "_sfail", False):
+                self._m(st, "field_set", st.sides.index(T), code="spikes")
         elif code == "toxicspikes":
             if T.hazards.get("toxicspikes", 0) >= 2:
                 self._sfail = True
             T.hazards["toxicspikes"] = min(2, T.hazards.get("toxicspikes", 0) + 1)
+            if not getattr(self, "_sfail", False):
+                self._m(st, "field_set", st.sides.index(T), code="toxicspikes")
         elif code == "stickyweb":
             if T.hazards.get("stickyweb"):
                 self._sfail = True
             T.hazards["stickyweb"] = 1
+            if not getattr(self, "_sfail", False):
+                self._m(st, "field_set", st.sides.index(T), code="stickyweb")
         elif code == "safeguard":
             if S.screens.get("safeguard", 0) > 0:
                 self._sfail = True
             S.screens["safeguard"] = 5
+            if not getattr(self, "_sfail", False):
+                self._m(st, "field_set", st.sides.index(S), code="safeguard")
         else:
             self._unsup("side_condition:" + code)
 
@@ -2978,9 +3108,12 @@ class Engine:
         order = sorted((0, 1), key=lambda i: ((1 if st.trick_room else -1) * self.speed_of(st, i), rng.random()))
         if st.trick_room:
             st.trick_room -= 1
+            if not st.trick_room:
+                self._m(st, "room", None, r="trick", on=False)
         if st.weather:
             st.weather_turns -= 1
             if st.weather_turns <= 0:
+                self._m(st, "weather_end", None, w=st.weather)
                 st.weather = None
                 self._forecast_sync(st)
         for i in order:
@@ -3156,10 +3289,12 @@ class Engine:
             for k in list(S.screens):
                 S.screens[k] -= 1
                 if S.screens[k] <= 0:
+                    self._m(st, "field_end", i, code=k)
                     del S.screens[k]
         if st.terrain:
             st.terrain_turns -= 1
             if st.terrain_turns <= 0:
+                self._m(st, "terrain_end", None, t=st.terrain)
                 st.terrain = None
         if st.magic_room:
             st.magic_room -= 1
@@ -3167,11 +3302,14 @@ class Engine:
                 self._magic_end(st)
         if st.wonder_room:
             st.wonder_room -= 1
+            if not st.wonder_room:
+                self._m(st, "room", None, r="wonder", on=False)
         if st.fairy_lock:
             st.fairy_lock -= 1
         if st.gravity:
             st.gravity -= 1
             if not st.gravity:
+                self._m(st, "room", None, r="gravity", on=False)
                 self._grav = False
         for i in (0, 1):
             m_ = st.sides[i].mon
@@ -3184,4 +3322,5 @@ class Engine:
     def clone(self, st):
         c = copy.deepcopy(st)
         c.log = None
+        c.msgs = None
         return c

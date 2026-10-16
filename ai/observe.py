@@ -38,11 +38,16 @@ class ObsEngine(Engine):
     def _run_switch_in(self, st, side, bm, rng, only=None):
         foe = st.sides[1 - side].mon
         before = dict(foe.boosts)
+        n0 = len(st.msgs) if st.log is not None and getattr(st, "msgs", None) is not None else 0
         super()._run_switch_in(st, side, bm, rng, only=only)
         if foe.boosts != before:                    # 위협/끈적끈적 시럽 등 상대 능력치를 바꾸는 등장 특성
             for src, r in self.rows(bm, "switch_in"):
                 if r["kind"] == "stat_stage" and r["target"] == "foe":
                     self._rec(st, ("trigger", side, r["label"]))
+                    if st.log is not None and getattr(st, "msgs", None) is not None and not any(
+                            x["k"] == "trigger" and x.get("src") == r["label"] for x in st.msgs[n0:]):
+                        self._m(st, "trigger", side, sid=bm.sid, src=r["label"], rk="stat_stage", code=None)
+                        st.msgs.insert(n0, st.msgs.pop())
                     break
 
     def _consume(self, st, bm):

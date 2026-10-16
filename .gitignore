@@ -31,3 +31,11 @@ Thumbs.db
 etl/cache_meta/
 etl/cache_replays/
 data/
+
+# GUI 실행 로그/내 프리셋
+gui/server.log
+gui/server.out
+gui/presets/
+gui/ko_text.json
+gui/design_pack.zip
+gui/design_pack/

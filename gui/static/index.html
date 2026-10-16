@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>포켓몬 챔피언스 배틀 도우미</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{color-scheme:dark;
+  --bg:#0d0f12;--panel:#15181d;--sunk:#1c2026;--line:#262b33;--line2:#363c46;
+  --text:#eceef2;--mut:#9aa1ad;--dim:#666d79;
+  --acc:#3fc8d8;--acc-ink:#03232a;--me:#3fc8d8;--op:#ff8a5c;
+  --good:#4cc870;--bad:#ff6363;--warn:#f2a53a;--crit:#f6cf45;--screen:#6aa4ff;
+  --r:12px;--font:"IBM Plex Sans KR",system-ui,"Malgun Gothic",sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace}
+@media (prefers-color-scheme:light){:root{color-scheme:light;
+  --bg:#f2f3f5;--panel:#fff;--sunk:#f6f7f9;--line:#e2e5ea;--line2:#cdd2da;
+  --text:#14171c;--mut:#596270;--dim:#8a919c;
+  --acc:#0e8fa0;--acc-ink:#fff;--me:#0e8fa0;--op:#d9572a;
+  --good:#1d8c45;--bad:#d63333;--warn:#b86a06;--crit:#8f6500;--screen:#2e6ee0}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 var(--font);-webkit-font-smoothing:antialiased}
+a{color:var(--acc);cursor:pointer;text-decoration:underline;text-underline-offset:3px}a:hover{color:var(--text)}
+.mono,.pct,.tot{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.mut{color:var(--mut)}
+.lbl{font-size:11px;font-weight:600;letter-spacing:.04em;color:var(--dim)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--c,var(--acc));flex:none}
+
+/* 헤더 */
+header{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.hd{max-width:1300px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;margin-right:auto}
+.mark{width:26px;height:26px;border-radius:8px;border:2px solid var(--acc);display:grid;place-items:center}
+.mark::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--acc)}
+.brand b{display:block;font-size:15px;line-height:1.1;letter-spacing:-.01em}
+.brand small{display:block;font:500 10px/1.2 var(--mono);color:var(--dim);letter-spacing:.12em}
+.tabs{display:flex;gap:2px;padding:3px;background:var(--sunk);border:1px solid var(--line);border-radius:10px}
+header .tab{height:32px;padding:0 14px 0 8px;border:0;border-radius:7px;background:transparent;color:var(--mut);font-weight:600;display:flex;align-items:center;gap:8px}
+header .tab .no{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font:600 11px var(--mono);background:var(--line);color:var(--mut)}
+header .tab:hover:not(.on){color:var(--text);border-color:transparent}
+header .tab.on{background:var(--acc);color:var(--acc-ink)}
+header .tab.on .no{background:color-mix(in srgb,var(--acc-ink) 18%,transparent);color:var(--acc-ink)}
+main{max-width:1300px;margin:0 auto;padding:20px 16px 72px}
+@media(max-width:520px){.hd{gap:10px}.tabs{width:100%}header .tab{flex:1;justify-content:center}main{padding-top:14px}}
+
+/* 기본 컨트롤 */
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:12px}
+button,select,input,textarea{font:inherit;color:var(--text);background:var(--sunk);border:1px solid var(--line);border-radius:8px}
+button{height:34px;padding:0 12px;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;transition:border-color .12s,background .12s}
+button:hover:not(:disabled){border-color:var(--line2);background:var(--line)}
+button:disabled{opacity:.45;cursor:default}
+button.primary{background:var(--acc);border-color:var(--acc);color:var(--acc-ink);font-weight:600}
+button.primary:hover:not(:disabled){background:var(--acc);filter:brightness(1.08)}
+button.ghost{background:transparent;border-color:transparent;color:var(--mut)}
+button.ghost:hover:not(:disabled){color:var(--text);background:var(--sunk);border-color:var(--line)}
+button.danger:hover:not(:disabled){color:var(--bad)}
+button.lg{height:44px;font-size:15px;padding:0 20px}
+button.block{width:100%}
+button small{font-size:11px;color:var(--dim);margin-left:4px}
+input,select{height:34px;padding:0 10px;min-width:0;width:100%}
+textarea{padding:8px 10px;width:100%;resize:vertical;font:12px/1.5 var(--mono)}
+select{appearance:none;-webkit-appearance:none;padding-right:28px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a919c' stroke-width='1.5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent)}
+input::placeholder,textarea::placeholder{color:var(--dim)}
+input[type=number]{-moz-appearance:textfield}input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.warn{color:var(--warn);font-size:12px}.warn:empty{display:none}
+.tag{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:5px;font-size:11px;font-weight:600;background:var(--sunk);border:1px solid var(--line);color:var(--mut)}
+.tag.acc{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 40%,transparent)}
+.seg{display:inline-flex;padding:3px;gap:2px;background:var(--sunk);border:1px solid var(--line);border-radius:10px}
+.seg .tab{height:30px;border:0;background:transparent;color:var(--mut);font-weight:600;display:flex;align-items:center;gap:7px}
+.seg .tab::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--line2)}
+.seg .tab:hover:not(.on){background:transparent;color:var(--text)}
+.seg .tab.on{background:var(--panel);color:var(--text);box-shadow:0 1px 2px #0003,inset 0 0 0 1px var(--line2)}
+#sideA.on::before{background:var(--me)}#sideB.on::before{background:var(--op)}
+.ph{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.ph b{font-size:14px}
+.pagehead{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0 2px 12px}
+.pagehead h2{margin:0;font-size:20px;letter-spacing:-.02em}
+
+/* 파티 */
+.toolbar{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center}
+.grp{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.grp+.grp{padding-left:14px;border-left:1px solid var(--line)}
+@media(max-width:1100px){.grp+.grp{padding-left:0;border-left:0}}
+@media(max-width:700px){.toolbar>.grp{width:100%}}
+#presetName{width:130px}#presetList{width:auto;min-width:120px}
+details.code{padding:0}
+details.code summary{list-style:none;cursor:pointer;padding:12px 14px;display:flex;align-items:center;gap:10px;font-weight:600;font-size:13px}
+details.code summary::-webkit-details-marker{display:none}
+details.code summary::after{content:"";margin-left:auto;width:8px;height:8px;border-right:1.5px solid var(--dim);border-bottom:1.5px solid var(--dim);transform:rotate(45deg) translateY(-3px);transition:transform .15s}
+details.code[open] summary::after{transform:rotate(-135deg) translateY(-1px)}
+details.code summary .mut{font-weight:400;font-size:12px}
+.codebody{padding:0 14px 14px;display:grid;gap:8px}
+.grid6{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,350px),1fr));gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px;display:flex;flex-direction:column;gap:12px}
+.card.empty{background:transparent;border-style:dashed;border-color:var(--line2)}
+.ch{display:flex;align-items:center;gap:8px;min-height:20px}
+.ch .no{font:600 12px var(--mono);color:var(--dim)}
+.fMon{height:42px;font-size:16px;font-weight:600}
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.f{display:grid;gap:5px;min-width:0}.f.s2{grid-column:1/-1}
+.mv{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.spw{display:grid;gap:8px;padding:12px;margin:0 -2px;background:var(--sunk);border-radius:10px}
+.sph{display:flex;align-items:center;justify-content:space-between}
+.spsel{display:flex;align-items:baseline;gap:6px;font-size:13px;font-weight:600}
+.spsel b{font-size:16px}.spsel .mut{font-size:11px;font-weight:500}
+.up{color:var(--bad)}.down{color:var(--screen)}
+.sptot{font-weight:500;color:var(--mut);letter-spacing:0}.sptot b{color:var(--text)}.sptot b.zero{color:var(--acc)}.sptot b.over{color:var(--bad)}
+.rng{position:relative;padding-top:14px}
+.ticks span{position:absolute;top:0;transform:translateX(-50%);font:600 10px var(--mono);color:var(--dim);transform-origin:50% 100%;transition:color .12s,font-size .12s,transform .12s}
+.ticks span::after{content:"";position:absolute;left:50%;top:13px;width:1px;height:6px;background:currentColor;transition:height .12s,width .12s}
+.ticks.up span{color:color-mix(in srgb,var(--bad) 45%,var(--dim))}.ticks.down span{color:color-mix(in srgb,var(--screen) 45%,var(--dim))}
+.ticks span.hit{font-size:14px;font-weight:700;transform:translateX(-50%) translateY(-2px)}
+.ticks span.hit::after{width:2px;height:8px}
+.ticks.up span.hit{color:var(--bad)}.ticks.down span.hit{color:var(--screen)}
+.fRange{-webkit-appearance:none;appearance:none;width:100%;height:22px;padding:0;margin:0;border:0;background:transparent;box-shadow:none!important;--rc:var(--acc)}
+.fRange.up{--rc:var(--bad)}.fRange.down{--rc:var(--screen)}
+.fRange::-webkit-slider-runnable-track{height:6px;border-radius:3px;background:linear-gradient(90deg,var(--rc) var(--p,0%),var(--line) var(--p,0%))}
+.fRange::-moz-range-track{height:6px;border-radius:3px;background:linear-gradient(90deg,var(--rc) var(--p,0%),var(--line) var(--p,0%))}
+.fRange::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;margin-top:-6px;border-radius:50%;background:var(--panel);border:2px solid var(--rc);cursor:pointer}
+.fRange::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--panel);border:2px solid var(--rc);cursor:pointer}
+.sp{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+.spc{display:grid;gap:4px;justify-items:stretch;text-align:center}
+.spc span{font-size:11px;color:var(--mut);font-weight:500}
+.spc.up span{color:var(--bad);font-weight:700}.spc.down span{color:var(--screen);font-weight:700}
+.spc.up span::after{content:" ▲";font-size:8px}.spc.down span::after{content:" ▼";font-size:8px}
+.spc.up i b{background:var(--bad)}.spc.down i b{background:var(--screen)}
+.spc.on input{border-color:var(--acc);box-shadow:0 0 0 2px color-mix(in srgb,var(--acc) 22%,transparent)}
+.spc.up.on input{border-color:var(--bad)}.spc.down.on input{border-color:var(--screen)}
+.spc input{height:32px;padding:0 2px;text-align:center;font:500 13px var(--mono);background:var(--panel)}
+.spc i{height:3px;border-radius:2px;background:var(--line);overflow:hidden}
+.spc i b{display:block;height:100%;background:var(--mut)}
+.fin{display:grid;gap:8px;padding:12px;margin:0 -2px;background:var(--sunk);border-radius:10px}
+.fin .fh{display:flex;align-items:center;gap:8px}
+.megabtn{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:5px;font-size:11px;font-weight:600;background:var(--sunk);color:var(--dim);border:1px solid var(--line);cursor:pointer}
+.megabtn:hover:not(:disabled){color:var(--mut);border-color:var(--line2);background:var(--sunk)}
+.megabtn.on{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 40%,transparent);background:var(--sunk)}
+.megabtn.on:hover:not(:disabled){color:var(--acc);border-color:var(--acc);background:var(--sunk)}
+.fin .grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;text-align:center}
+.fin .grid div{display:grid;gap:2px}.fin .grid span{font-size:11px;color:var(--mut);font-weight:500}
+.fin .grid b{font:600 15px var(--mono);font-variant-numeric:tabular-nums}
+.fin .grid .up b{color:var(--bad)}.fin .grid .down b{color:var(--screen)}
+.fin .grid .up span{color:var(--bad);font-weight:700}.fin .grid .down span{color:var(--screen);font-weight:700}
+.cf{display:flex;justify-content:flex-end;gap:6px;margin-top:-2px}
+
+/* 타입·상태 배지 */
+.types{display:inline-flex;gap:4px;flex-wrap:wrap}
+.ty{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:5px;font-size:11px;font-weight:600;background:var(--t);color:#fff;text-shadow:0 1px 0 #0003}
+.ch .types{margin-left:auto}
+.st{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:5px;font-size:11px;font-weight:700;color:#fff}
+
+/* 선출 */
+.pickgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.pickgrid .panel{margin:0}
+@media(max-width:900px){.pickgrid{grid-template-columns:1fr}}
+.cnt{margin-left:auto;font-size:12px;font-weight:600;color:var(--mut)}
+.ords{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px}
+.ord{padding:8px 10px;border-radius:8px;border:1px dashed var(--line2);min-width:0}
+.ord span{display:block;font-size:11px;color:var(--dim);font-weight:600}
+.ord b{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dim)}
+.ord.on{border-style:solid;border-color:color-mix(in srgb,var(--c) 50%,transparent);background:color-mix(in srgb,var(--c) 9%,transparent)}
+.ord.on b{color:var(--text)}.ord.on span{color:var(--c)}
+.picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+.pick{position:relative;height:auto;padding:10px 12px;display:grid;gap:5px;justify-items:start;text-align:left;border-radius:10px;white-space:normal}
+.pick .pn{font-size:14px;font-weight:600;padding-right:26px}
+.pick small{font-size:12px;color:var(--mut)}
+.pick.on{border-color:var(--c);background:color-mix(in srgb,var(--c) 10%,var(--sunk))}
+.pick.on:hover:not(:disabled){border-color:var(--c);background:color-mix(in srgb,var(--c) 14%,var(--sunk))}
+.pick b.n{position:absolute;top:8px;right:8px;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--c);color:var(--bg);font:700 12px var(--mono)}
+.note{padding:20px;text-align:center;color:var(--mut);font-size:13px;border:1px dashed var(--line2);border-radius:10px}
+.actionbar{position:sticky;bottom:12px;display:flex;flex-wrap:wrap;gap:10px 12px;align-items:center;margin-top:12px;box-shadow:0 8px 24px #0004}
+.actionbar label{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--mut)}
+.actionbar select{width:auto}
+.grow{flex:1}
+@media(max-width:620px){.actionbar .primary{width:100%}}
+
+/* 배틀 */
+.turnbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.turnno{display:flex;align-items:baseline;gap:6px;padding:4px 12px;border-radius:9px;background:var(--panel);border:1px solid var(--line)}
+.turnno small{font:600 10px var(--mono);letter-spacing:.12em;color:var(--dim)}
+.turnno b{font:600 20px var(--mono)}
+.banner{display:grid;gap:2px;text-align:center;padding:22px;border-color:color-mix(in srgb,var(--acc) 45%,transparent);background:color-mix(in srgb,var(--acc) 8%,var(--panel))}
+.banner small{font:600 11px var(--mono);letter-spacing:.12em;color:var(--acc)}
+.banner b{font-size:26px;letter-spacing:-.02em}
+.battle{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.battle>.panel,.battle>div>.panel{margin:0}
+@media(max-width:900px){.battle{grid-template-columns:1fr}}
+.lower{margin-top:12px;align-items:start}
+#bActs{display:grid;gap:12px}
+.sh{display:flex;align-items:center;gap:8px;padding-bottom:12px;margin-bottom:14px;border-bottom:1px solid var(--line)}
+.sh b{font-size:13px;color:var(--mut);font-weight:600}
+.am{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.am .nm{font-size:22px;font-weight:700;letter-spacing:-.02em;line-height:1.2;margin-right:2px}
+.hp{height:10px;background:var(--line);border-radius:5px;overflow:hidden}
+.hp i{display:block;height:100%;border-radius:5px;transition:width .4s}
+.hpn{display:flex;justify-content:space-between;align-items:baseline;margin-top:6px}
+.hpn span{font-size:12px;color:var(--mut)}
+.hpn b{font-size:15px}
+.meta{display:flex;flex-wrap:wrap;gap:4px 16px;margin:10px 0 14px;font-size:13px}
+.meta em{font-style:normal;color:var(--dim);font-size:12px;margin-right:6px}
+.kv{display:grid;grid-template-columns:36px 1fr;gap:10px 10px;margin:0;align-items:start}
+.kv dt{font-size:11px;font-weight:600;color:var(--dim);line-height:22px}
+.kv dd{margin:0;min-width:0}
+.tgs{display:flex;gap:4px;flex-wrap:wrap}
+.tgs .none{font-size:12px;color:var(--dim);line-height:22px}
+.tg{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:6px;font-size:12px;font-weight:500;background:var(--sunk);border:1px solid var(--line)}
+.tg.good{color:var(--good);border-color:color-mix(in srgb,var(--good) 35%,transparent);background:color-mix(in srgb,var(--good) 10%,transparent)}
+.tg.bad{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 35%,transparent);background:color-mix(in srgb,var(--bad) 10%,transparent)}
+.tg.hazard{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent);background:color-mix(in srgb,var(--warn) 10%,transparent)}
+.tg.screen{color:var(--screen);border-color:color-mix(in srgb,var(--screen) 40%,transparent);background:color-mix(in srgb,var(--screen) 10%,transparent)}
+.tg.weather,.tg.room{background:var(--panel);border-color:var(--line2);font-weight:600}
+.bench{display:flex;gap:6px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:7px;height:26px;padding:0 9px;border-radius:7px;background:var(--sunk);border:1px solid var(--line);font-size:12px}
+.chip .mini{width:28px;height:4px;border-radius:2px;background:var(--line);overflow:hidden}
+.chip .mini b{display:block;height:100%}
+.chip em{font:500 11px var(--mono);font-style:normal;color:var(--mut)}
+.chip.dead{opacity:.45}.chip.dead>span:first-child{text-decoration:line-through}
+.val{margin-left:auto;text-align:right;line-height:1.15}
+.val small{display:block;font-size:11px;color:var(--dim);font-weight:600}
+.val b{font:600 18px var(--mono)}
+.calc{color:var(--mut);font-size:12px}
+.alist{display:grid;gap:6px}
+.act{display:grid;grid-template-columns:minmax(0,1fr) minmax(56px,30%) 54px;gap:12px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:var(--sunk);cursor:pointer;transition:border-color .12s,background .12s}
+.act:hover{border-color:var(--line2)}
+.act .al{font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis}
+.act .bar{height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.act .bar i{display:block;height:100%;background:var(--mut);border-radius:3px}
+.act .bar:empty{background:linear-gradient(90deg,var(--line) 0%,var(--line2) 50%,var(--line) 100%);background-size:200% 100%;animation:shim 1.2s linear infinite}
+@keyframes shim{to{background-position:-200% 0}}
+.pct{text-align:right;font-size:13px;color:var(--mut)}
+.act.best .bar i{background:var(--good)}
+.act.best .pct{color:var(--good);font-weight:700}
+.act.best .al::after{content:"최고";margin-left:8px;font-size:10px;font-weight:700;color:var(--good);vertical-align:2px}
+.act.sel{border-color:var(--acc);background:color-mix(in srgb,var(--acc) 10%,var(--sunk));box-shadow:inset 0 0 0 1px var(--acc)}
+.aiside{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px}
+.submit{display:grid;gap:6px;justify-items:center}
+.submit .mut{font-size:12px}
+.logp{display:flex;flex-direction:column}
+.logp .ph{margin-bottom:6px}
+#log{height:440px;overflow:auto;font-size:13.5px;line-height:1.6;padding-right:4px;margin-right:-4px;scrollbar-width:thin}
+.ln{padding:1px 0}
+.ln.turn{display:flex;align-items:center;gap:10px;margin:14px 0 6px;color:var(--dim);font:600 11px var(--mono);letter-spacing:.06em}
+.ln.turn::before,.ln.turn::after{content:"";flex:1;height:1px;background:var(--line)}
+.ln.turn:first-child{margin-top:2px}
+.ln.hpl{color:var(--dim);font-size:12px;padding-left:14px;font-variant-numeric:tabular-nums}
+.ln.crit{color:var(--crit);font-weight:700;background:color-mix(in srgb,var(--crit) 11%,transparent);border-radius:6px;padding:2px 8px;margin:2px -8px}
+.ln.boost{color:var(--good)}.ln.unboost{color:var(--bad)}
+.ln.boost::before{content:"▲ ";font-size:10px}.ln.unboost::before{content:"▼ ";font-size:10px}
+.ln.mega{color:var(--acc);font-weight:600}
+@media(max-width:900px){#log{height:340px}}
+.empty{padding:40px 20px;text-align:center;color:var(--mut)}
+
+/* 모달 */
+#modal{position:fixed;inset:0;background:#000a;backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;z-index:20;padding:16px}
+.mset{display:grid;gap:8px;text-align:left;width:100%;height:auto;padding:12px 14px;border-radius:10px;white-space:normal;background:var(--sunk);border:1px solid var(--line);cursor:pointer;font-weight:400}
+.mset:hover:not(.on){border-color:var(--line2);background:var(--sunk)}
+.mset.on,.mset.on:hover{border:2px solid var(--screen);padding:11px 13px;background:color-mix(in srgb,var(--screen) 8%,var(--sunk))}
+.mset .t{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mut);font-weight:600}
+.mset .mvs{display:flex;flex-wrap:wrap;gap:5px}
+.mset .mvs span{font-size:12.5px;padding:2px 8px;border-radius:6px;background:var(--panel);border:1px solid var(--line);color:var(--text)}
+.mset .sps{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:13px}
+.mset .sps b{font:600 13px var(--mono)}.mset .sps .up{color:var(--bad)}.mset .sps .down{color:var(--screen)}
+.mset .sub{font-size:12px;color:var(--mut)}
+.mfoot{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+#modal .box{background:var(--panel);border:1px solid var(--line2);border-radius:14px;padding:20px;width:min(520px,100%);max-height:calc(100vh - 32px);overflow:auto;box-shadow:0 20px 60px #0008}
+.box h3{margin:4px 0 16px;font-size:17px;letter-spacing:-.01em}
+.hint{margin:6px 0 16px;max-height:220px;overflow:auto;font-size:13px;background:var(--sunk);border:1px solid var(--line);border-radius:9px;padding:8px 12px}
+.opts{display:grid;gap:6px}
+.opt{height:auto;padding:12px 14px;display:grid;grid-template-columns:1fr 90px 56px;gap:12px;align-items:center;text-align:left;border-radius:10px}
+.opt b{font-size:15px}
+.opt .hp{height:6px}
+.opt .mono{text-align:right;font-size:12px;color:var(--mut)}
+.opt:hover:not(:disabled){border-color:var(--acc)}
+</style>
+</head>
+<body>
+<header><div class="hd">
+  <div class="brand"><span class="mark"></span><div><b>배틀 도우미</b><small>POKÉMON CHAMPIONS</small></div></div>
+  <nav class="tabs">
+    <button class="tab on" data-t="party"><span class="no">1</span>파티</button>
+    <button class="tab" data-t="pick"><span class="no">2</span>선출</button>
+    <button class="tab" data-t="battle"><span class="no">3</span>배틀</button>
+  </nav>
+</div></header>
+<main>
+<section id="t-party">
+  <div class="panel toolbar">
+    <div class="seg">
+      <button class="tab on" id="sideA" onclick="setSide(0)">내 파티</button>
+      <button class="tab" id="sideB" onclick="setSide(1)">상대 파티</button>
+    </div>
+    <div class="grp">
+      <span class="lbl">프리셋</span>
+      <input id="presetName" placeholder="프리셋 이름">
+      <button onclick="presetSave()">저장</button>
+      <select id="presetList"></select>
+      <button onclick="presetLoad()">불러오기</button>
+      <button class="ghost danger" onclick="presetDel()">삭제</button>
+    </div>
+    <div class="grp">
+      <button onclick="randomTeam()">메타 랜덤 6마리</button>
+      <button class="ghost danger" onclick="clearTeam()">비우기</button>
+    </div>
+  </div>
+  <details class="panel code">
+    <summary>프리셋 코드 <span class="mut">현재 선택한 쪽 파티 6마리를 짧은 문자열로 저장/복원</span></summary>
+    <div class="codebody">
+      <textarea id="code" rows="3" placeholder="PCP1-..."></textarea>
+      <div class="grp"><button onclick="codeExport()">내보내기</button><button onclick="codeImport()">불러오기</button></div>
+    </div>
+  </details>
+  <div class="grid6" id="slots"></div>
+</section>
+
+<section id="t-pick" hidden>
+  <div class="pagehead"><h2>선출</h2><span class="mut">클릭한 순서가 1번(선두), 2번, 3번</span></div>
+  <div class="pickgrid" id="pickBox"></div>
+  <div class="panel actionbar">
+    <div class="grp">
+      <span class="lbl">플레이어</span>
+      <label>내 쪽 <select id="mode0"><option value="human">사람</option><option value="ai">AI 자동</option></select></label>
+      <label>상대 쪽 <select id="mode1"><option value="ai">AI 자동</option><option value="human">사람</option></select></label>
+    </div>
+    <div class="grow"></div>
+    <span id="pickMsg" class="warn"></span>
+    <button disabled title="선출 AI 는 아직 없다">선출 AI 추천<small>준비 중</small></button>
+    <button class="primary lg" onclick="startBattle()">배틀 시작</button>
+  </div>
+</section>
+
+<section id="t-battle" hidden>
+  <div id="bBanner"><div class="panel empty">아직 진행 중인 배틀이 없습니다.<br><a onclick="showTab('pick')">선출</a>에서 양쪽 3마리를 고른 뒤 배틀을 시작하세요.</div></div>
+  <div class="battle" id="bField"></div>
+  <div class="battle lower" id="bLower" hidden>
+    <div id="bActs"></div>
+    <div class="panel logp"><div class="ph"><b>진행 기록</b></div><div id="log"></div></div>
+  </div>
+</section>
+</main>
+<div id="modal"><div class="box" id="modalBox"></div></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const SPK = ["hp","atk","def","spa","spd","spe"], SPN = {hp:"HP",atk:"공격",def:"방어",spa:"특공",spd:"특방",spe:"속도"};
+const STAT_KO = {atk:"공격",def:"방어",spa:"특공",spd:"특방",spe:"속도",acc:"명중",eva:"회피"};
+const ST_KO = {brn:"화상",par:"마비",slp:"수면",frz:"얼음",psn:"독",tox:"맹독"};
+const ST_C = {brn:"#e0662f",par:"#c99a0a",slp:"#7d8799",frz:"#3aa6c4",psn:"#9a4fb5",tox:"#7a2f9a"};
+const TYPE = {Normal:["노말","#74736a"],Fire:["불꽃","#c14f1a"],Water:["물","#2472d3"],Electric:["전기","#966a00"],Grass:["풀","#3a8036"],Ice:["얼음","#247f8d"],Fighting:["격투","#c0463b"],Poison:["독","#9a52b0"],Ground:["땅","#9a6226"],Flying:["비행","#4b6dd9"],Psychic:["에스퍼","#dd265f"],Bug:["벌레","#567c1e"],Rock:["바위","#7c6c4c"],Ghost:["고스트","#6a5aa0"],Dragon:["드래곤","#6a4ae0"],Dark:["악","#5c4d45"],Steel:["강철","#5a7989"],Fairy:["페어리","#c635ab"],Stellar:["스텔라","#2f7c9b"]};
+const typeBadges = ts => `<span class="types">${(ts || []).map(t => { const [ko, c] = TYPE[t] || [t, "#888"]; return `<span class="ty" style="--t:${c}">${esc(ko)}</span>`; }).join("")}</span>`;
+const stBadge = s => s ? `<span class="st" style="background:${ST_C[s] || "#888"}">${ST_KO[s] || esc(s)}</span>` : "";
+const hpCol = p => p < 25 ? "var(--bad)" : p < 50 ? "var(--warn)" : "var(--good)";
+let D, teams = [Array(6).fill(null), Array(6).fill(null)], side = 0, picks = [[], []], B = null, sel = [null, null], analysis = [null, null], busy = false;
+const koMon = {}, koItem = {}, koMove = {}, MON = {}, koMonN = {};
+let dexLabels = [];                                                      // 검색 목록 순서(미리보기와 같은 순서)
+const nk = s => String(s).replace(/[\s()]/g, "").toLowerCase();      // 검색어 정규화: 공백/괄호 무시 (메가한카리아스Z = 메가한카리아스 Z)
+
+async function api(path, body, method) {
+  const r = await fetch(path, {method: method || (body ? "POST" : "GET"), headers: {"Content-Type": "application/json"}, body: body ? JSON.stringify(body) : undefined});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || r.statusText);
+  return j;
+}
+const save = () => { try { localStorage.setItem("pcTeams", JSON.stringify(teams)); } catch (e) {} };
+
+// ── 탭 ──
+document.querySelectorAll("header .tab").forEach(b => b.onclick = () => showTab(b.dataset.t));
+function showTab(t) {
+  document.querySelectorAll("header .tab").forEach(b => b.classList.toggle("on", b.dataset.t === t));
+  for (const k of ["party", "pick", "battle"]) $("#t-" + k).hidden = k !== t;
+  if (t === "pick") renderPick();
+  window.scrollTo(0, 0);
+}
+
+// ── 파티 편집 ──
+function setSide(s) { side = s; $("#sideA").classList.toggle("on", s === 0); $("#sideB").classList.toggle("on", s === 1); renderSlots(); }
+function blank(sid) { return {sid, ability: "", item: "", nature: "Docile", sp: {}, moves: []}; }
+function spTotal(m) { return SPK.reduce((a, k) => a + (+m.sp[k] || 0), 0); }
+
+function renderSlots() {
+  const root = $("#slots"); root.innerHTML = "";
+  teams[side].forEach((m, i) => root.appendChild(slotCard(m, i)));
+}
+function slotCard(m, i) {
+  const c = document.createElement("div");
+  const p = m && MON[m.sid];
+  c.className = "card" + (p ? "" : " empty");
+  c.innerHTML = `<div class="ch"><span class="no">${String(i + 1).padStart(2, "0")}</span>${p ? typeBadges(p.types) : ""}</div>
+   <input list="dlMon" class="fMon" placeholder="포켓몬 이름 검색" value="${p ? esc(p.ko) : ""}">`;
+  if (p) {
+    const abil = `<option value="" ${m.ability ? "" : "selected"}>-- 특성 선택 --</option>` + p.abilities.map(a => `<option value="${esc(a.en)}" ${a.en === m.ability ? "selected" : ""}>${esc(a.ko)}</option>`).join("");
+    const NO = ["atk", "def", "spa", "spd", "spe"], opt = n => `<option value="${n.en}" ${n.en === m.nature ? "selected" : ""}>${esc(n.ko)}${n.plus ? ` (+${STAT_KO[n.plus]||n.plus} −${STAT_KO[n.minus]||n.minus})` : " (무보정)"}</option>`;
+    const nat = [...NO, null].map(pl => {                                                  // 올려 주는 능력치(공격→방어→특공→특방→스피드) 별로 묶고, 내려가는 능력치도 같은 순서. 무보정은 맨 끝
+      const g = D.natures.filter(n => (n.plus || null) === pl).sort((a, b) => NO.indexOf(a.minus) - NO.indexOf(b.minus));
+      return g.length ? `<optgroup label="${pl ? STAT_KO[pl] + " ▲" : "무보정"}">${g.map(opt).join("")}</optgroup>` : "";
+    }).join("");
+    const mvs = [0, 1, 2, 3].map(k => `<input list="dlMv${i}" class="fMv" data-k="${k}" placeholder="기술 ${k + 1}" value="${esc(m.moves[k] ? (koMoveName(m.moves[k])) : "")}">`).join("");
+    c.innerHTML += `<div class="fields">
+        <div class="f"><label class="lbl">특성</label><select class="fAb">${abil}</select></div>
+        <div class="f"><label class="lbl">도구</label><input list="dlItem" class="fIt" placeholder="도구 검색" value="${esc(itemKo(m.item))}"></div>
+        <div class="f s2"><label class="lbl">성격</label><select class="fNa">${nat}</select></div>
+        <div class="f s2"><label class="lbl">기술</label><div class="mv">${mvs}</div></div>
+      </div>
+      <datalist id="dlMv${i}">${p.learn.filter(k => D.moves[k]).map(k => `<option value="${esc(D.moves[k].ko)}">`).join("")}</datalist>
+      <div class="spw">
+        <div class="sph"><span class="lbl">선택한 노력치 <span class="sptot mono"></span></span><span class="spsel"></span></div>
+        <div class="rng"><div class="ticks"></div><input type="range" class="fRange" min="0" max="32" step="1"></div>
+        <div class="sp">${SPK.map(k => `<label class="spc ${spMod(m, k)}" data-k="${k}"><span>${SPN[k]}</span><input type="number" inputmode="numeric" min="0" max="32" class="fSp" data-k="${k}" value="${+m.sp[k] || 0}"><i><b style="width:${(+m.sp[k] || 0) / 32 * 100}%"></b></i></label>`).join("")}</div>
+      </div>
+      <div class="fin"></div>
+      <div class="warn"></div>
+      <div class="cf"><button class="fMeta">최신 메타</button><button class="fReset">초기화</button><button class="fDel ghost danger">닫기</button></div>`;
+  }
+  bindCard(c, m, i);
+  if (p) { paintSp(c, m, i); validate(c, m); }
+  return c;
+}
+// 성격 보정: 상승 = up(빨강), 하락 = down(파랑)
+const natOf = m => D.natures.find(n => n.en === m.nature) || {};
+const spMod = (m, k) => { const n = natOf(m); return n.plus === k ? "up" : n.minus === k ? "down" : ""; };
+// 카드별 선택한 노력치 (side-slot → stat key)
+const spSel = {};
+const spKey = i => side + "-" + i;
+// 매직넘버: 성격 보정 뒤 내림(floor) 때문에 SP 1 이 실수치를 2 올리는 지점(상승 성격) / 0 올리는 지점(하락 성격). 실수치 = floor(보정 x (종족값 + SP + 20)) (엔진 계산식과 동일)
+function magicNumbers(m, k) {
+  const mod = spMod(m, k), b = MON[m.sid]?.base?.[k === "def" ? "def_" : k];
+  if (!mod || b === undefined) return [];
+  const f = x => Math.floor((mod === "up" ? 110 : 90) * x / 100), out = [];
+  for (let v = 1; v <= 32; v++) { const g = f(b + v + 20) - f(b + v + 19); if (mod === "up" ? g === 2 : g === 0) out.push(v); }
+  return out;
+}
+// 최종 능력치 (Lv.50): HP = 종족값+SP+75, 그 외 = floor(성격 x (종족값+SP+20)). 메가스톤을 들고 있으면 메가 종족값 기준
+const spMegaOff = {};                                         // 카드별 '메가진화' 토글 끔 상태 (기본은 켬)
+const toggleMega = i => { spMegaOff[spKey(i)] = !spMegaOff[spKey(i)]; renderSlots(); };
+function finalStats(m, i) {
+  const mg0 = D.megas.find(g => g.base === m.sid && g.item === m.item), on = !!mg0 && !spMegaOff[spKey(i)], mg = on ? mg0 : null;
+  const base = mg ? mg.stats : MON[m.sid].base, mod = {up: 110, down: 90};
+  const out = {};
+  for (const k of SPK) {
+    const b = base[k === "def" ? "def_" : k], sp = +m.sp[k] || 0, md = spMod(m, k);
+    out[k] = k === "hp" ? b + sp + 75 : Math.floor((mod[md] || 100) * (b + sp + 20) / 100);
+  }
+  return {v: out, mega: mg, canMega: !!mg0};
+}
+function paintSp(c, m, i) {
+  const k = spSel[spKey(i)] || "hp", v = +m.sp[k] || 0, mod = spMod(m, k);
+  c.querySelectorAll(".spc").forEach(el => el.classList.toggle("on", el.dataset.k === k));
+  const fs = finalStats(m, i);
+  c.querySelector(".fin").innerHTML = `<div class="fh"><span class="lbl">최종 능력치</span><span class="mut" style="font-size:11px">Lv.50</span>${fs.canMega ? `<button type="button" class="megabtn ${fs.mega ? "on" : ""}" aria-pressed="${!!fs.mega}" onclick="toggleMega(${i})" title="누르면 메가진화 종족값/기본 종족값 기준으로 전환">메가진화</button>` : ""}</div>
+    <div class="grid">${SPK.map(k => `<div class="${spMod(m, k)}"><span>${SPN[k]}</span><b>${fs.v[k]}</b></div>`).join("")}</div>`;
+  const tot = spTotal(m), left = 66 - tot;
+  c.querySelector(".sptot").innerHTML = `(${tot}/66) · <b class="${left < 0 ? "over" : left === 0 ? "zero" : ""}">${left}</b> 남음`;
+  c.querySelector(".spsel").innerHTML = `<span class="${mod}">${SPN[k]}${mod === "up" ? " ▲" : mod === "down" ? " ▼" : ""}</span><b class="mono">${v}</b><span class="mut mono">/ 32</span>`;
+  const r = c.querySelector(".fRange"); r.value = v; r.className = "fRange " + mod;
+  r.style.setProperty("--p", v / 32 * 100 + "%");
+  const tk = c.querySelector(".ticks"); tk.className = "ticks " + mod;
+  tk.innerHTML = mod ? magicNumbers(m, k).map(n => `<span class="${n <= v ? "hit" : ""}" style="left:${n / 32 * 100}%">${n}</span>`).join("") : "";
+}
+const koMoveName = k => (D.moves[k]?.ko) || k;
+const itemKo = en => (D.items.find(x => x.en === en)?.ko) || en || "";
+function bindCard(c, m, i) {
+  c.querySelector(".fMon").onkeydown = e => {              // Enter: 일치하는 이름이 없으면 미리보기 맨 위 결과를 자동으로 채운다
+    if (e.key !== "Enter") return;
+    const inp = e.target;
+    setTimeout(() => {
+      const v = inp.value.trim();
+      if (!v || koMon[v] || koMon[v.toLowerCase()] || koMonN[nk(v)]) return;      // 이미 정확히 일치(또는 목록에서 고른 값)
+      const q = nk(v), first = dexLabels.find(l => nk(l).startsWith(q)) || dexLabels.find(l => nk(l).includes(q));
+      if (first) { inp.value = first; inp.dispatchEvent(new Event("change")); }
+    }, 0);
+  };
+  c.querySelector(".fMon").onchange = async e => {
+    const v = e.target.value.trim(), sid = koMon[v] || koMon[v.toLowerCase()] || koMonN[nk(v)];
+    if (!sid) { if (!v) teams[side][i] = null; renderSlots(); save(); return; }
+    try { const s = await api("/api/meta_set/" + sid); teams[side][i] = normalize(s); } catch (_) { teams[side][i] = blank(sid); }
+    renderSlots(); save();
+  };
+  if (!m) return;
+  c.querySelector(".fAb").onchange = e => { m.ability = e.target.value; save(); };
+  c.querySelector(".fNa").onchange = e => { m.nature = e.target.value; save(); c.querySelectorAll(".spc").forEach(el => el.className = "spc " + spMod(m, el.dataset.k)); paintSp(c, m, i); };
+  c.querySelector(".fIt").onchange = e => { const v = e.target.value.trim(); m.item = koItem[v] || koItem[v.toLowerCase()] || (v ? m.item : ""); if (v && !koItem[v] && !koItem[v.toLowerCase()]) e.target.value = itemKo(m.item); save(); paintSp(c, m, i); validate(c, m); };
+  c.querySelectorAll(".fMv").forEach(inp => inp.onchange = e => {
+    const k = +e.target.dataset.k, v = e.target.value.trim(), key = koMove[v] || koMove[v.toLowerCase()];
+    const mv = m.moves.slice(); while (mv.length < 4) mv.push("");
+    mv[k] = key || ""; m.moves = mv.filter(x => x);
+    if (v && !key) e.target.value = ""; save(); renderSlots();
+  });
+  const setSp = (k, v) => {
+    const room = Math.min(32, 66 - (spTotal(m) - (+m.sp[k] || 0)));          // 이 능력치에 줄 수 있는 최대값 (칸당 32, 합 66)
+    v = m.sp[k] = Math.max(0, Math.min(room, Math.floor(+v) || 0));
+    const cell = c.querySelector(`.spc[data-k="${k}"]`);
+    cell.querySelector("i b").style.width = v / 32 * 100 + "%";
+    save(); paintSp(c, m, i); validate(c, m); return v;
+  };
+  c.querySelectorAll(".fSp").forEach(inp => {
+    inp.onfocus = e => { spSel[spKey(i)] = e.target.dataset.k; paintSp(c, m, i); };
+    inp.onkeydown = e => { if (["-", "+", "e", "E", ".", ","].includes(e.key)) e.preventDefault(); };     // 음수/소수 입력 막기
+    inp.oninput = e => {
+      const k = e.target.dataset.k; spSel[spKey(i)] = k;
+      const raw = e.target.value, v = setSp(k, raw);
+      if (raw !== "" && String(v) !== raw) e.target.value = v;                    // 범위를 넘으면 줄 수 있는 최대값(또는 0)으로 되돌린다
+    };
+    inp.onblur = e => { e.target.value = +m.sp[e.target.dataset.k] || 0; };
+  });
+  c.querySelector(".fRange").oninput = e => { const k = spSel[spKey(i)] || "hp"; c.querySelector(`.fSp[data-k="${k}"]`).value = setSp(k, e.target.value); };
+  c.querySelector(".fMeta").onclick = () => openMeta(i, m.sid);
+  c.querySelector(".fReset").onclick = () => { delete spMegaOff[spKey(i)]; teams[side][i] = blank(m.sid); renderSlots(); save(); };     // 이름만 남기고 도구/노력치/기술 비움, 특성 기본, 성격 온순
+  c.querySelector(".fDel").onclick = () => { teams[side][i] = null; renderSlots(); save(); };
+}
+function normalize(s) { return {sid: s.sid, ability: s.ability, item: s.item || "", nature: s.nature || "Serious", sp: s.sp || {}, moves: (s.moves || []).slice(0, 4)}; }
+async function validate(c, m) {
+  try { const w = (await api("/api/check", {team: [m]}))[0]; c.querySelector(".warn").textContent = w.join(" · "); } catch (_) {}
+}
+async function randomTeam() {
+  const top = await api("/api/meta_top?n=40"); const pick = [];
+  while (pick.length < 6) { const s = top[Math.floor(Math.random() * top.length)]; if (!pick.includes(s)) pick.push(s); }
+  teams[side] = await Promise.all(pick.map(async s => normalize(await api("/api/meta_set/" + s + "?random_=1")))); renderSlots(); save();
+}
+function clearTeam() { teams[side] = Array(6).fill(null); renderSlots(); save(); }
+const filled = t => t.filter(Boolean);
+
+// ── 프리셋 ──
+async function presetList() { const l = await api("/api/presets"); $("#presetList").innerHTML = l.map(n => `<option>${esc(n)}</option>`).join(""); }
+async function presetSave() { const n = $("#presetName").value.trim(); if (!n) return alert("이름을 입력"); await api("/api/presets/save", {name: n, team: filled(teams[side])}); presetList(); }
+async function presetLoad() { const n = $("#presetList").value; if (!n) return; const r = await api("/api/presets/" + encodeURIComponent(n)); setTeam(r.team); }
+async function presetDel() { const n = $("#presetList").value; if (n && confirm(n + " 삭제?")) { await api("/api/presets/" + encodeURIComponent(n), null, "DELETE"); presetList(); } }
+function setTeam(list) { teams[side] = Array.from({length: 6}, (_, i) => list[i] ? normalize(list[i]) : null); renderSlots(); save(); }
+async function codeExport() { const r = await api("/api/preset/encode", {team: filled(teams[side])}); $("#code").value = r.code; }
+async function codeImport() { try { setTeam((await api("/api/preset/decode", {code: $("#code").value})).team); } catch (e) { alert(e.message); } }
+
+// ── 선출 ──
+function renderPick() {
+  const names = ["내 파티", "상대 파티"], cols = ["var(--me)", "var(--op)"];
+  $("#pickBox").innerHTML = [0, 1].map(s => {
+    const P = picks[s];
+    const ords = [0, 1, 2].map(k => { const m = P[k] !== undefined ? teams[s][P[k]] : null;
+      return `<div class="ord ${m ? "on" : ""}"><span>${k ? (k + 1) + "번" : "1번 · 선두"}</span><b>${m ? esc(MON[m.sid].ko) : "—"}</b></div>`; }).join("");
+    const tiles = teams[s].map((m, i) => { if (!m) return ""; const n = P.indexOf(i);
+      return `<button class="pick ${n >= 0 ? "on" : ""}" onclick="togglePick(${s},${i})">${n >= 0 ? `<b class="n">${n + 1}</b>` : ""}<span class="pn">${esc(MON[m.sid].ko)}</span>${typeBadges(MON[m.sid].types)}<small>${esc(itemKo(m.item)) || "도구 없음"}</small></button>`; }).join("");
+    return `<div class="panel" style="--c:${cols[s]}"><div class="ph"><span class="dot"></span><b>${names[s]}</b><span class="cnt">${P.length} / 3</span></div>
+      <div class="ords">${ords}</div>${tiles ? `<div class="picks">${tiles}</div>` : `<div class="note">파티 탭에서 포켓몬을 먼저 등록하세요</div>`}</div>`;
+  }).join("");
+}
+function togglePick(s, i) { const p = picks[s], k = p.indexOf(i); if (k >= 0) p.splice(k, 1); else if (p.length < 3) p.push(i); renderPick(); }
+async function startBattle() {
+  const msg = $("#pickMsg"); msg.textContent = "";
+  if (picks[0].length !== 3 || picks[1].length !== 3) { msg.textContent = "양쪽 모두 3마리를 골라야 한다"; return; }
+  if (teams.some(t => !t.some(Boolean))) { msg.textContent = "파티가 비어 있다"; return; }
+  try {
+    B = await api("/api/battle/new", {teams: teams.map(t => t.map(m => m || teams[0].find(Boolean))), picks, modes: [$("#mode0").value, $("#mode1").value], names: ["내 쪽", "상대 쪽"]});
+  } catch (e) { msg.textContent = e.message; return; }
+  sel = [null, null]; analysis = [null, null]; showTab("battle"); renderBattle(); loadAnalysis();
+}
+
+// ── 배틀 ──
+const logHtml = lines => lines.map(l => `<div class="ln ${l.cls || ""}">${esc(l.text)}</div>`).join("");
+const hpPct = m => Math.round(100 * m.hp / m.maxhp);
+const tagHtml = (t, cls) => `<span class="tg ${cls || t.kind}">${esc(t.text)}</span>`;
+const SIDE_C = ["var(--me)", "var(--op)"];
+function renderBattle() {
+  if (!B) return;
+  $("#bLower").hidden = false;
+  $("#bBanner").innerHTML = B.winner === null
+    ? `<div class="turnbar"><div class="turnno"><small>TURN</small><b>${B.turn + 1}</b></div><div class="tgs">${B.field.tags.map(t => tagHtml(t)).join("") || '<span class="none">필드 효과 없음</span>'}</div></div>`
+    : `<div class="banner panel"><small>배틀 종료</small><b>${B.winner === -1 ? "무승부" : (esc(B.sides[B.winner].name) + " 승리!")}</b></div>`;
+  $("#bField").innerHTML = B.sides.map((S, i) => {
+    const a = S.team.find(m => m.active), p = hpPct(a);
+    return `<div class="panel" style="--c:${SIDE_C[i]}">
+      <div class="sh"><span class="dot"></span><b>${esc(S.name)}</b><span class="tag">${S.mode === "ai" ? "AI" : "사람"}</span>${S.mega_used ? '<span class="tag acc">메가 사용</span>' : ""}</div>
+      <div class="am"><span class="nm">${esc(a.name)}</span>${stBadge(a.status)}${typeBadges(a.types)}</div>
+      <div class="hp"><i style="width:${p}%;background:${hpCol(p)}"></i></div>
+      <div class="hpn"><span class="mono">${a.hp} / ${a.maxhp}</span><b class="mono" style="color:${hpCol(p)}">${p}%</b></div>
+      <div class="meta"><span><em>특성</em>${esc(a.ability)}</span><span><em>도구</em>${esc(itemKo(a.item)) || "없음"}</span></div>
+      <dl class="kv">
+        <dt>상태</dt><dd class="tgs">${a.tags.map(t => tagHtml(t)).join("") || '<span class="none">특별한 상태 없음</span>'}</dd>
+        <dt>벤치</dt><dd class="bench">${S.team.filter(m => !m.active).map(m => { const q = hpPct(m);
+          return `<span class="chip ${m.alive ? "" : "dead"}"><span>${esc(m.name)}</span>${m.alive ? `<i class="mini"><b style="width:${q}%;background:${hpCol(q)}"></b></i><em>${q}%</em>${stBadge(m.status)}` : "<em>기절</em>"}</span>`; }).join("")}</dd>
+        <dt>진영</dt><dd class="tgs">${S.tags.map(t => tagHtml(t)).join("") || '<span class="none">없음</span>'}</dd>
+      </dl></div>`;
+  }).join("");
+  renderActs();
+  const lg = $("#log"); lg.innerHTML = logHtml(B.log); lg.scrollTop = lg.scrollHeight;
+}
+function renderActs() {
+  const el = $("#bActs"); let h = "";
+  if (B.winner !== null) { el.innerHTML = `<div class="panel"><button class="primary lg block" onclick="showTab('pick')">다시 선출</button></div>`; return; }
+  B.sides.forEach((S, i) => {
+    if (S.mode !== "human") { h += `<div class="panel aiside" style="--c:${SIDE_C[i]}"><span class="dot"></span>${esc(S.name)}: AI 가 자동으로 행동한다</div>`; return; }
+    const A = analysis[i];
+    const rows = S.acts.map(a => { const r = A?.actions.find(x => x.act[0] === a.act[0] && x.act[1] === a.act[1]); return {...a, win: r?.win}; });
+    const best = rows.reduce((m, r) => r.win !== undefined && r.win > m ? r.win : m, -1);
+    if (A) rows.sort((a, b) => (b.win ?? -1) - (a.win ?? -1));
+    const v = A && isFinite(A.value) ? (A.value * 100).toFixed(1) + "%" : "—";
+    h += `<div class="panel" style="--c:${SIDE_C[i]}"><div class="ph"><span class="dot"></span><b>${esc(S.name)} 행동 선택</b>
+      <div class="val">${A ? `<small>현재 국면 승률</small><b>${v}</b>` : '<span class="calc">승률 계산 중…</span>'}</div></div><div class="alist">` +
+      rows.map(r => { const on = sel[i] && sel[i][0] === r.act[0] && sel[i][1] === r.act[1];
+        return `<div class="act ${on ? "sel" : ""} ${r.win === best && A ? "best" : ""}" onclick='pickAct(${i},${JSON.stringify(r.act)})'><span class="al">${esc(r.label)}</span><span class="bar">${r.win !== undefined ? `<i style="width:${r.win * 100}%"></i>` : ""}</span><span class="pct">${r.win !== undefined ? (r.win * 100).toFixed(1) + "%" : ""}</span></div>`; }).join("") + `</div></div>`;
+  });
+  const need = B.sides.every((S, i) => S.mode !== "human" || sel[i]);
+  h += `<div class="submit"><button class="primary lg block" ${need && !busy ? "" : "disabled"} onclick="submitTurn([])">턴 진행</button>${busy ? '<span class="mut">계산 중…</span>' : need ? "" : '<span class="mut">행동을 선택하세요</span>'}</div>`;
+  el.innerHTML = h;
+}
+function pickAct(i, a) { sel[i] = a; renderActs(); }
+async function loadAnalysis() {
+  if (!B || B.winner !== null) return;
+  const turn = B.turn;
+  for (let i = 0; i < 2; i++) if (B.sides[i].mode === "human") {
+    try { const r = await api(`/api/battle/${B.id}/analyze`, {side: i}); if (B && B.turn === turn) { analysis[i] = r; renderActs(); } }
+    catch (e) { if (B && B.turn === turn) { analysis[i] = {value: NaN, actions: []}; renderActs(); $("#bActs").insertAdjacentHTML("afterbegin", `<div class="warn">승률 계산 실패: ${esc(e.message)}</div>`); } }
+  }
+}
+async function submitTurn(choices) {
+  busy = true; renderActs();
+  try {
+    const acts = B.sides.map((S, i) => S.mode === "human" ? sel[i] : null);
+    const r = await api(`/api/battle/${B.id}/turn`, {acts, choices});
+    if (r.need_choice) { busy = false; B = r; askChoice(r.need_choice, choices); return; }
+    B = r; sel = [null, null]; analysis = [null, null];
+  } catch (e) { alert(e.message); }
+  busy = false; renderBattle(); loadAnalysis();
+}
+function askChoice(nc, choices) {
+  const S = B.sides[nc.side];
+  $("#modalBox").innerHTML = `<span class="lbl">추가 선택</span><h3>${esc(S.name)}: 교체할 포켓몬을 고르세요</h3>
+    <span class="lbl">이번 턴 지금까지의 진행</span>
+    <div class="hint">${logHtml(nc.hint || [])}</div>
+    <div class="opts">` + nc.options.map(o => { const p = Math.round(100 * o.hp / o.maxhp);
+      return `<button class="opt" onclick="chooseSwitch(${o.idx})"><b>${esc(o.name)}</b><span class="hp"><i style="width:${p}%;background:${hpCol(p)}"></i></span><span class="mono">HP ${p}%</span></button>`; }).join("") + `</div>`;
+  $("#modal").style.display = "flex"; window._choices = choices;
+}
+// ── 최신 메타 후보 선택 ──
+let metaCtx = null;
+async function openMeta(i, sid) {
+  metaCtx = {i, sid, side, sets: [], pick: null};
+  $("#modalBox").innerHTML = `<span class="lbl">최신 메타</span><h3>${esc(MON[sid].ko)} 세트 선택</h3><div class="mut">불러오는 중…</div>`;
+  $("#modal").style.display = "flex";
+  try { metaCtx.sets = await api("/api/meta_sets/" + sid); } catch (e) { metaCtx.sets = []; }
+  renderMeta(sid);
+}
+function renderMeta(sid) {
+  const x = metaCtx; if (!x) return;
+  const NO = {hp:"HP",atk:"공격",def:"방어",spa:"특공",spd:"특방",spe:"속도"};
+  const cards = x.sets.map((st, k) => {
+    const nat = D.natures.find(n => n.en === st.nature) || {};
+    const sp = SPK.filter(q => +st.sp[q] > 0).sort((a, b) => st.sp[b] - st.sp[a]).map(q => `<span class="${nat.plus === q ? "up" : nat.minus === q ? "down" : ""}">${NO[q]} <b>${st.sp[q]}</b></span>`).join("") || '<span class="mut">분배 없음</span>';
+    const mg = D.megas.find(g => g.base === st.sid && g.item === st.item);
+    return `<button type="button" class="mset ${x.pick === k ? "on" : ""}" onclick="pickMeta(${k})">
+      <div class="t"><span>후보 ${k + 1}</span>${mg ? '<span class="tag acc">메가진화형</span>' : ""}<span style="margin-left:auto">${esc(nat.ko || st.nature)} · 사용률 ${st.usage}%</span></div>
+      <div class="mvs">${st.moves.map(mv => `<span>${esc(koMoveName(mv))}</span>`).join("") || '<span class="mut">기술 정보 없음</span>'}</div>
+      <div class="sps">${sp}</div>
+      <div class="sub">${esc((MON[st.sid].abilities.find(a => a.en === st.ability) || {}).ko || st.ability)} · ${esc(itemKo(st.item)) || "도구 없음"}</div></button>`;
+  }).join("");
+  $("#modalBox").innerHTML = `<span class="lbl">최신 메타</span><h3>${esc(MON[sid].ko)} 세트 선택</h3>
+    <div class="opts">${cards || '<div class="note">이 포켓몬의 메타 통계가 없습니다</div>'}</div>
+    <div class="mfoot"><button type="button" onclick="closeMeta()">닫기</button><button type="button" class="primary" ${x.pick === null ? "disabled" : ""} onclick="applyMeta()">확인</button></div>`;
+}
+function pickMeta(k) { metaCtx.pick = k; renderMeta(metaCtx.sid); }
+function closeMeta() { metaCtx = null; $("#modal").style.display = "none"; }
+function applyMeta() {
+  const x = metaCtx; if (!x || x.pick === null) return;
+  teams[x.side][x.i] = normalize(x.sets[x.pick]); delete spMegaOff[x.side + "-" + x.i];
+  closeMeta(); renderSlots(); save();
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape" && metaCtx) closeMeta(); });
+function chooseSwitch(idx) { $("#modal").style.display = "none"; submitTurn([...(window._choices || []), idx]); }
+
+// ── 시작 ──
+(async function init() {
+  D = await api("/api/dex");
+  D.mons.forEach(m => { MON[m.sid] = m; koMon[m.ko] = m.sid; koMon[m.en.toLowerCase()] = m.sid; koMonN[nk(m.ko)] = m.sid; koMonN[nk(m.ko.replace(/ \(수컷\)$/, ""))] ??= m.sid; });
+  D.megas.forEach(g => g.labels.forEach(l => { koMon[l] = g.sid; koMonN[nk(l)] = g.sid; }));
+  dexLabels = [...D.mons.map(m => m.ko), ...D.megas.flatMap(g => g.labels)];
+  D.items.forEach(i => { koItem[i.ko] = i.en; koItem[i.en.toLowerCase()] = i.en; });
+  Object.values(D.moves).forEach(m => { koMove[m.ko] = m.key; koMove[m.en.toLowerCase()] = m.key; });
+  document.body.insertAdjacentHTML("beforeend",
+    `<datalist id="dlMon">${D.mons.map(m => `<option value="${esc(m.ko)}">`).join("")}${D.megas.flatMap(g => g.labels).map(l => `<option value="${esc(l)}">`).join("")}</datalist><datalist id="dlItem">${D.items.map(i => `<option value="${esc(i.ko)}">`).join("")}</datalist>`);
+  try { const t = JSON.parse(localStorage.getItem("pcTeams")); if (t) teams = t; } catch (_) {}
+  renderSlots(); presetList();
+})();
+</script>
+</body>
+</html>
