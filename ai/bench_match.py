@@ -72,6 +72,8 @@ class Player:
             return greedy_action(eng, st, me, self.rng)
         alive = {i: m for i, m in self.models.items() if st.sides[opp].team[i].alive}
         w, r = self.params["worlds"], self.params["rollouts"]
+        if self.kind == "nashv2" and self.params.get("worlds_b"):
+            w = self.params["worlds_b"]                    # 비교 실험: nashv2 쪽만 세계 수를 달리한다
         if self.kind == "flat":
             ev = evaluate_hidden(eng, st, me, alive, n_worlds=w, rollouts=r, seed=self.rng.randrange(10 ** 9))
             return max(ev, key=ev.get)
@@ -153,6 +155,7 @@ def main():
     ap.add_argument("--delta", type=float, default=0.08)
     ap.add_argument("--info", default="post", choices=["post", "prior", "oracle", "know_item", "know_moves", "know_spread", "know_ability"],
                     help="--a 에이전트가 가진 상대 정보 수준 (정보 가치 실험)")
+    ap.add_argument("--worlds-b", type=int, default=0, help="--b(nashv2) 의 세계 수 (0 이면 --worlds 와 같음)")
     ap.add_argument("--legacy-b", action="store_true", help="--b(nashv2) 가 이전 방식의 기술 표본추출을 쓴다")
     ap.add_argument("--snap", type=int, default=33)
     ap.add_argument("--teams", default="meta", choices=["meta", "replay"])
@@ -160,7 +163,7 @@ def main():
     ap.add_argument("--ckpt", default="data/value_v2/value_net.pt", help="nashv 에이전트가 쓸 가치망")
     ap.add_argument("--ckpt2", default=None, help="nashv2 에이전트가 쓸 가치망")
     a = ap.parse_args()
-    params = dict(worlds=a.worlds, rollouts=a.rollouts, pick=a.pick, depth=a.depth, kmax=a.kmax, delta=a.delta, info=a.info, info_kind=a.a, legacy_b=a.legacy_b)
+    params = dict(worlds=a.worlds, rollouts=a.rollouts, pick=a.pick, depth=a.depth, kmax=a.kmax, delta=a.delta, info=a.info, info_kind=a.a, legacy_b=a.legacy_b, worlds_b=a.worlds_b)
     jobs = []
     for g in range(a.games):
         jobs.append(((a.a, a.b), 2000 + g, params))      # A 가 0번 자리
