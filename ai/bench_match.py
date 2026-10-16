@@ -53,6 +53,9 @@ class Player:
         self.rng = random.Random(seed)
         self.models = {i: OppModel(meta, data, sid) for i, sid in enumerate(opp_species)}
         self.ev_n = 0
+        if params.get("legacy_b") and kind == "nashv2":          # 비교 실험: nashv2 쪽은 이전 방식의 기술 표본추출
+            for m in self.models.values():
+                m.legacy = True
         if info not in ("post", "prior") and opp_team:           # oracle / know_*: 상대의 진짜 세트(일부)를 안다고 가정
             for i, m in self.models.items():
                 m.sample_set = (lambda rng, m=m, t=opp_team[i], w=info: _override(type(m).sample_set(m, rng), t, w))
@@ -150,13 +153,14 @@ def main():
     ap.add_argument("--delta", type=float, default=0.08)
     ap.add_argument("--info", default="post", choices=["post", "prior", "oracle", "know_item", "know_moves", "know_spread", "know_ability"],
                     help="--a 에이전트가 가진 상대 정보 수준 (정보 가치 실험)")
+    ap.add_argument("--legacy-b", action="store_true", help="--b(nashv2) 가 이전 방식의 기술 표본추출을 쓴다")
     ap.add_argument("--snap", type=int, default=33)
     ap.add_argument("--teams", default="meta", choices=["meta", "replay"])
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--ckpt", default="data/value_v2/value_net.pt", help="nashv 에이전트가 쓸 가치망")
     ap.add_argument("--ckpt2", default=None, help="nashv2 에이전트가 쓸 가치망")
     a = ap.parse_args()
-    params = dict(worlds=a.worlds, rollouts=a.rollouts, pick=a.pick, depth=a.depth, kmax=a.kmax, delta=a.delta, info=a.info, info_kind=a.a)
+    params = dict(worlds=a.worlds, rollouts=a.rollouts, pick=a.pick, depth=a.depth, kmax=a.kmax, delta=a.delta, info=a.info, info_kind=a.a, legacy_b=a.legacy_b)
     jobs = []
     for g in range(a.games):
         jobs.append(((a.a, a.b), 2000 + g, params))      # A 가 0번 자리

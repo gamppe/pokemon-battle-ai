@@ -68,6 +68,7 @@ class OppModel:
         t = sum(h.w for h in self.hyps) or 1.0
         for h in self.hyps:
             h.w /= t
+        self._q = None
 
     def _spec(self, h, **extra):
         return dict(sid=self.sid, ability=h.ability, item=h.item, nature=h.nature, sp=h.sp, **extra)
@@ -220,8 +221,9 @@ class OppModel:
         self._update(lik)
 
     # ───────── 결과 ─────────
-    def _move_probs(self):
-        """보인 기술은 1, 나머지는 남은 칸 수에 맞게 재정규화한 포함 확률"""
+    legacy = False          # True 면 이전 방식(상한 1 로 자르기 + 가중 비복원 추첨) 으로 동작 (비교 실험용)
+
+    def _move_probs_legacy(self):
         seen = set(self.seen_moves)
         slots = max(0, 4 - len(seen))
         rest = {m: p for m, p in self.prior_moves.items() if m not in seen}
@@ -229,6 +231,55 @@ class OppModel:
         out = {m: 1.0 for m in seen}
         for m, p in rest.items():
             out[m] = min(1.0, p * slots / tot) if slots else 0.0
+        return out
+
+    def _move_probs(self, h=None):
+        if self.legacy:
+            return self._move_probs_legacy()
+        """보인 기술은 1, 나머지는 남은 칸 수(= 4 - 보인 수)에 맞게 포함 확률을 정한다 (합이 정확히 칸 수가 되도록 상한 1 을 고려해 비례 배분).
+        h(가설)가 주어지면 구애 계열/돌격조끼처럼 변화기를 거의 안 쓰는 도구에서는 변화 기술 가중치를 낮춘다."""
+        seen = set(self.seen_moves)
+        slots = max(0, 4 - len(seen))
+        rest = {m: p for m, p in self.prior_moves.items() if m not in seen}
+        if h is not None and rest:
+            q = getattr(self, "_q", None)
+            if q is None:
+                qc = sum(x.w for x in self.hyps if norm(x.item) in CHOICE_ITEMS)
+                qv = sum(x.w for x in self.hyps if norm(x.item) == "assaultvest")
+                self._q = q = (qc, qv)
+            qc, qv = q
+            fc, fv = 0.15, 0.0                                   # 구애 계열은 변화기 가중치 0.15배, 돌격조끼는 0
+            rest_mass = 1.0 - qc - qv
+            fo = (1.0 - qc * fc - qv * fv) / rest_mass if rest_mass > 1e-9 else 1.0      # 도구 전체에 걸친 기술 주변확률이 유지되도록 나머지 도구의 변화기 가중치를 올린다
+            it = norm(h.item)
+            f = fv if it == "assaultvest" else (fc if it in CHOICE_ITEMS else fo)
+            if f != 1.0:
+                rest = {m: p * (f if self.data.moves[m]["category"] == "status" else 1.0) for m, p in rest.items()}
+        out = {m: 1.0 for m in seen}
+        if not slots or not rest:
+            for m in rest:
+                out[m] = 0.0
+            return out
+        # 수분배: pi_i = min(1, c * w_i), sum = slots
+        items = sorted(rest.items(), key=lambda kv: -kv[1])
+        total = sum(rest.values())
+        if total <= 0:
+            return {**out, **{m: 0.0 for m in rest}}
+        capped, left = 0, float(slots)
+        w_left = total
+        for m, w in items:
+            c = left / w_left if w_left > 0 else 0.0
+            if c * w >= 1.0 and capped < slots:
+                out[m] = 1.0
+                left -= 1.0
+                w_left -= w
+                capped += 1
+            else:
+                break
+        c = left / w_left if w_left > 0 else 0.0
+        for m, w in items:
+            if m not in out:
+                out[m] = min(1.0, c * w)
         return out
 
     def marginal(self, what):
@@ -254,21 +305,51 @@ class OppModel:
             if x <= 0:
                 h = hh
                 break
-        probs = self._move_probs()
+        probs = self._move_probs(h)
         chosen = [m for m in self.seen_moves]
-        pool = {m: p for m, p in probs.items() if m not in chosen and p > 0}
-        while len(chosen) < 4 and pool:
-            tot = sum(pool.values())
-            y = rng.random() * tot
-            pick = None
-            for m, p in pool.items():
-                y -= p
-                if y <= 0:
-                    pick = m
-                    break
-            pick = pick or next(iter(pool))
-            chosen.append(pick)
-            pool.pop(pick)
+        need = 4 - len(chosen)
+        cand = [(m, p) for m, p in probs.items() if m not in chosen and p > 0]
+        if self.legacy:
+            pool = dict(cand)
+            while len(chosen) < 4 and pool:
+                tot = sum(pool.values())
+                y = rng.random() * tot
+                pick = None
+                for m, p in pool.items():
+                    y -= p
+                    if y <= 0:
+                        pick = m
+                        break
+                pick = pick or next(iter(pool))
+                chosen.append(pick)
+                pool.pop(pick)
+        elif need > 0 and cand:
+            if len(cand) <= need:
+                chosen += [m for m, _ in cand]
+            else:
+                rng.shuffle(cand)                        # 체계적 표본추출(Madow): 각 기술이 정확히 포함 확률 p 로 뽑힌다
+                u, cum, picked = rng.random(), 0.0, []
+                for m, p in cand:
+                    lo, hi = cum, cum + p
+                    cum = hi
+                    k = math.ceil(lo - u)                # u + k 가 (lo, hi] 안에 있으면 선택
+                    if lo < u + k <= hi or (k == 0 and lo < u <= hi):
+                        picked.append(m)
+                chosen += picked[:need]
+                if len(chosen) < 4:                      # 합이 칸 수에 못 미치면 남은 후보 중 가중 추첨으로 채운다
+                    pool = {m: p for m, p in cand if m not in chosen}
+                    while len(chosen) < 4 and pool:
+                        tot = sum(pool.values())
+                        y = rng.random() * tot
+                        pick = None
+                        for m, p in pool.items():
+                            y -= p
+                            if y <= 0:
+                                pick = m
+                                break
+                        pick = pick or next(iter(pool))
+                        chosen.append(pick)
+                        pool.pop(pick)
         return dict(sid=self.sid, ability=h.ability, item=h.item, nature=h.nature, sp=dict(h.sp), moves=chosen)
 
 
